@@ -4,11 +4,11 @@
  *
  * @license  GPL-3.0-or-later  https://www.gnu.org/licenses/gpl-3.0.html
  * @author   xsukax
- * @version  2.4.1
+ * @version  2.5.0
  */
 
 define('APP_NAME',    'XFedi');
-define('APP_VER',     '2.4.1');
+define('APP_VER',     '2.5.0');
 define('DB_PATH',     __DIR__ . '/xfedi.db');
 define('UPLOAD_DIR',  __DIR__ . '/uploads/');
 define('MAX_CHARS',   500);
@@ -133,6 +133,10 @@ function ago(int $ts): string {
     return date('M j, Y', $ts);
 }
 
+function timeEl(int $ts): string {
+    return '<time datetime="'.date('c', $ts).'" title="'.date('F j, Y g:i a', $ts).'">'.ago($ts).'</time>';
+}
+
 function selfHandle(): string {
     $u = getUser(); if (!$u) return '';
     $url = baseURL();
@@ -159,10 +163,10 @@ function avatarEl(string $avatarUrl, string $name, int $size = 40): string {
     $initials = h(mb_strtoupper(mb_substr($name ?: '?', 0, 1)));
     $fs = floor($size * 0.4);
     if ($avatarUrl) {
-        return '<img src="'.h($avatarUrl).'" class="avatar" width="'.$size.'" height="'.$size.'" alt=""'
+        return '<img src="'.h($avatarUrl).'" class="avatar" width="'.$size.'" height="'.$size.'" alt="'.h($name).'"'
              .' onerror="this.outerHTML=\'<div class=\\\'avatar-placeholder\\\' style=\\\'width:'.$size.'px;height:'.$size.'px;font-size:'.$fs.'px\\\'>'.$initials.'</div>\'">';
     }
-    return '<div class="avatar-placeholder" style="width:'.$size.'px;height:'.$size.'px;font-size:'.$fs.'px">'.$initials.'</div>';
+    return '<div class="avatar-placeholder" style="width:'.$size.'px;height:'.$size.'px;font-size:'.$fs.'px" aria-label="'.h($name).'">'.$initials.'</div>';
 }
 
 function resolveCommentAuthor(array $comment, string $myAvatarUrl, string $base): array {
@@ -176,6 +180,11 @@ function resolveCommentAuthor(array $comment, string $myAvatarUrl, string $base)
         return ['avatar' => $fr['avatar'] ?? '', 'profile_url' => $base.'?page=remote_profile&handle='.urlencode($comment['author']), 'display' => $comment['author']];
     }
     return ['avatar' => '', 'profile_url' => '', 'display' => $comment['author']];
+}
+
+function textSnippet(string $text, int $len = 160): string {
+    $plain = strip_tags($text);
+    return mb_strlen($plain) > $len ? mb_substr($plain, 0, $len) . '…' : $plain;
 }
 
 // ── Federation ────────────────────────────────────────────────────────────────
@@ -232,7 +241,7 @@ function refreshFeedCache(): void {
     }
 }
 
-// ── Federation API ────────────────────────────────────────────────────────────
+// ── Federation API (public) ───────────────────────────────────────────────────
 if (isset($_GET['api'])) {
     initDB();
     header('Access-Control-Allow-Origin: *');
@@ -320,7 +329,7 @@ if (isset($_GET['api'])) {
     };
 }
 
-// ── File serving ──────────────────────────────────────────────────────────────
+// ── File serving (public) ─────────────────────────────────────────────────────
 if (isset($_GET['file'])) {
     initDB(); $u = getUser(); $key = $_GET['file'];
     $serve = function (string $f) {
@@ -337,6 +346,40 @@ if (isset($_GET['file'])) {
         $serve($s->fetch()['image_path']??'');
     }
     http_response_code(404); exit;
+}
+
+// ── Sitemap (public) ──────────────────────────────────────────────────────────
+if (isset($_GET['sitemap'])) {
+    initDB();
+    $u    = getUser();
+    $base = baseURL();
+    header('Content-Type: application/xml; charset=utf-8');
+    header('Cache-Control: public, max-age=3600');
+    $posts = db()->query("SELECT id, updated_at FROM posts ORDER BY created_at DESC LIMIT 500")->fetchAll();
+    echo '<?xml version="1.0" encoding="UTF-8"?>';
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
+    echo '<url><loc>'.h($base).'</loc><changefreq>daily</changefreq><priority>1.0</priority></url>';
+    if ($u) echo '<url><loc>'.h($base.'?page=profile').'</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>';
+    foreach ($posts as $p) {
+        echo '<url><loc>'.h($base.'?page=post&id='.$p['id']).'</loc>';
+        echo '<lastmod>'.date('Y-m-d', $p['updated_at']).'</lastmod>';
+        echo '<changefreq>monthly</changefreq><priority>0.6</priority></url>';
+    }
+    echo '</urlset>';
+    exit;
+}
+
+// ── Robots.txt (public) ───────────────────────────────────────────────────────
+if (isset($_GET['robots'])) {
+    $base = baseURL();
+    header('Content-Type: text/plain; charset=utf-8');
+    header('Cache-Control: public, max-age=86400');
+    echo "User-agent: *\nAllow: /\n";
+    echo "Disallow: /?api=\nDisallow: /?file=\nDisallow: /?ajax=\n";
+    echo "Disallow: /?page=settings\nDisallow: /?page=notifications\n";
+    echo "Disallow: /?page=following\nDisallow: /?page=followers\nDisallow: /?page=login\n\n";
+    echo "Sitemap: ".$base."?sitemap\n";
+    exit;
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -362,6 +405,7 @@ $act = $_POST['action']??''; $cu = getUser(true); $page = $_GET['page']??'home';
 if ($act==='login') {
     if ($cu && trim($_POST['username']??'')===$cu['username'] && password_verify($_POST['password']??'',$cu['password'])) { session_regenerate_id(true); $_SESSION['auth']=true; redir($base); }
     $errors[] = 'Invalid username or password.';
+    $page = 'login';
 }
 if ($act==='logout') { session_destroy(); redir($base); }
 
@@ -460,13 +504,14 @@ if ($act==='change_password' && isLoggedIn() && checkCsrf()) {
 
 if ($act==='refresh_feed' && isLoggedIn()) { refreshFeedCache(); json(['ok'=>true]); }
 
-// ── AJAX feed ─────────────────────────────────────────────────────────────────
+// ── AJAX feed (public) ────────────────────────────────────────────────────────
 if (isset($_GET['ajax']) && $_GET['ajax']==='feed') {
-    $cu     = getUser();
-    $actor  = 'local:'.$cu['username'];
-    $mode   = $_GET['mode']??'before';
-    $before = (int)($_GET['before']??9999999999);
-    $after  = (int)($_GET['after']??0);
+    $cu      = getUser();
+    $loggedIn = isLoggedIn();
+    $actor   = ($loggedIn && $cu) ? 'local:'.$cu['username'] : '';
+    $mode    = $_GET['mode']??'before';
+    $before  = (int)($_GET['before']??9999999999);
+    $after   = (int)($_GET['after']??0);
 
     if ($mode==='after') {
         $s = db()->prepare("SELECT * FROM posts WHERE created_at > ? ORDER BY created_at DESC");
@@ -480,14 +525,15 @@ if (isset($_GET['ajax']) && $_GET['ajax']==='feed') {
     foreach ($local as &$p) {
         $p['_src']    = 'local';
         $p['_key']    = 'local:'.$p['id'];
-        $p['_author'] = ['username'=>$cu['username'],'name'=>$cu['name'],'avatar'=>$cu['avatar']?$base.'?file=avatar':''];
+        $p['_author'] = $cu ? ['username'=>$cu['username'],'name'=>$cu['name'],'avatar'=>$cu['avatar']?$base.'?file=avatar':''] : [];
         $p['image_url'] = $p['image_path']?$base.'?file=post_img&id='.$p['id']:'';
         $p['post_url']  = $base.'?page=post&id='.$p['id'];
-        $ls = db()->prepare("SELECT COUNT(*) FROM likes WHERE post_id=? AND actor=?"); $ls->execute([$p['id'],$actor]); $p['_liked']=(bool)$ls->fetchColumn();
+        $p['_liked']    = false;
+        if ($actor) {
+            $ls = db()->prepare("SELECT COUNT(*) FROM likes WHERE post_id=? AND actor=?"); $ls->execute([$p['id'],$actor]); $p['_liked']=(bool)$ls->fetchColumn();
+        }
         $cs = db()->prepare("SELECT COUNT(*) FROM comments WHERE post_id=?"); $cs->execute([$p['id']]); $p['_comments']=(int)$cs->fetchColumn();
-        // newest single comment for preview
-        $lc = db()->prepare("SELECT author, content, created_at FROM comments WHERE post_id=? ORDER BY created_at DESC LIMIT 1");
-        $lc->execute([$p['id']]); $p['_last_comment'] = $lc->fetch() ?: null;
+        $lc = db()->prepare("SELECT author, content, created_at FROM comments WHERE post_id=? ORDER BY created_at DESC LIMIT 1"); $lc->execute([$p['id']]); $p['_last_comment']=$lc->fetch()?:null;
         unset($p['image_path']);
     }
 
@@ -522,15 +568,19 @@ if (isset($_GET['ajax']) && $_GET['ajax']==='feed') {
     if ($mode==='after') {
         json(['posts'=>$arr,'has_more'=>false,'is_refresh'=>true]);
     } else {
-        $page_posts = array_slice($arr,0,PPP);
-        json(['posts'=>$page_posts,'has_more'=>count($arr)>PPP]);
+        json(['posts'=>array_slice($arr,0,PPP),'has_more'=>count($arr)>PPP]);
     }
 }
 
 // ── Page data ─────────────────────────────────────────────────────────────────
 $cu = getUser(true); $page = $_GET['page']??'home';
+
+// Gate private pages
+$privatePages = ['settings','notifications','following','followers'];
+if (!isLoggedIn() && in_array($page, $privatePages)) { redir($base.'?page=login'); }
+
 $handle     = selfHandle();
-$notifCount = (int)db()->query("SELECT COUNT(*) FROM notifications WHERE is_read=0")->fetchColumn();
+$notifCount = isLoggedIn() ? (int)db()->query("SELECT COUNT(*) FROM notifications WHERE is_read=0")->fetchColumn() : 0;
 $posts=[]; $follows=[]; $followers=[]; $notifications=[];
 $singlePost=null; $comments=[];
 $remoteProfileData=null; $remotePosts=[]; $remotePostData=null;
@@ -571,15 +621,82 @@ if ($page==='remote_post') {
 }
 if (isset($_GET['saved'])) $info='Profile saved successfully.';
 
+// ── SEO meta computation ──────────────────────────────────────────────────────
+$myAvatarUrl  = ($cu && $cu['avatar']) ? $base.'?file=avatar' : '';
+$myCoverUrl   = ($cu && $cu['cover'])  ? $base.'?file=cover'  : '';
+$seoTitle     = APP_NAME;
+$seoDesc      = ($cu && $cu['bio']) ? $cu['bio'] : 'A federated social platform. Own your posts.';
+$seoImage     = $myAvatarUrl;
+$seoCanonical = $base;
+$seoType      = 'website';
+$seoRobots    = 'index,follow';
+$seoJsonLd    = null;
+$seoAuthor    = $cu ? $cu['name'] : APP_NAME;
+
+if ($cu) {
+    if ($page === 'home') {
+        $seoTitle     = APP_NAME.' — '.$cu['name'];
+        $seoDesc      = ($cu['bio'] ?: 'Public feed from '.$cu['name'].'\'s federated instance.');
+        $seoJsonLd    = ['@context'=>'https://schema.org','@type'=>'Blog','name'=>APP_NAME,'url'=>$base,'author'=>['@type'=>'Person','name'=>$cu['name'],'url'=>$base.'?page=profile']];
+    }
+    if ($page === 'profile') {
+        $seoTitle     = h($cu['name']).' (@'.h($cu['username']).') — '.APP_NAME;
+        $seoDesc      = $cu['bio'] ?: 'Posts by '.$cu['name'].' on '.APP_NAME;
+        $seoCanonical = $base.'?page=profile';
+        $seoType      = 'profile';
+        $seoJsonLd    = ['@context'=>'https://schema.org','@type'=>'ProfilePage','url'=>$seoCanonical,'mainEntity'=>['@type'=>'Person','name'=>$cu['name'],'description'=>$cu['bio']??'','url'=>$seoCanonical,'image'=>$myAvatarUrl]];
+    }
+    if ($page === 'post' && $singlePost) {
+        $plain        = textSnippet($singlePost['content'], 160);
+        $shortTitle   = textSnippet($singlePost['content'], 60);
+        $seoTitle     = $shortTitle.' — '.APP_NAME;
+        $seoDesc      = $plain;
+        $seoCanonical = $base.'?page=post&id='.$singlePost['id'];
+        $seoType      = 'article';
+        if ($singlePost['image_path']) $seoImage = $base.'?file=post_img&id='.$singlePost['id'];
+        $seoJsonLd    = ['@context'=>'https://schema.org','@type'=>'SocialMediaPosting','url'=>$seoCanonical,'headline'=>$shortTitle,'description'=>$plain,'datePublished'=>date('c',$singlePost['created_at']),'dateModified'=>date('c',$singlePost['updated_at']),'author'=>['@type'=>'Person','name'=>$cu['name'],'url'=>$base.'?page=profile'],'image'=>$seoImage?:null,'publisher'=>['@type'=>'Person','name'=>$cu['name'],'url'=>$base.'?page=profile']];
+        if (!$seoJsonLd['image']) unset($seoJsonLd['image']);
+    }
+    if ($page === 'remote_post' && $remotePostData && !isset($remotePostData['error'])) {
+        $plain        = textSnippet($remotePostData['content']??'', 160);
+        $seoTitle     = textSnippet($remotePostData['content']??'', 60).' — '.APP_NAME;
+        $seoDesc      = $plain;
+        $seoCanonical = $base.'?page=remote_post&handle='.urlencode($remoteHandle).'&id='.(int)($remotePostData['id']??0);
+        $seoRobots    = 'noindex,follow';
+    }
+    if (in_array($page, ['settings','notifications','following','followers','login'])) {
+        $seoRobots = 'noindex,nofollow';
+    }
+}
+
 render:
-$myAvatarUrl = (!$isFirstRun&&$cu&&$cu['avatar'])?$base.'?file=avatar':'';
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title><?= h(APP_NAME) ?><?= (!$isFirstRun&&$cu)?' · @'.h($cu['username']):'' ?></title>
+<title><?= h($seoTitle ?? APP_NAME) ?></title>
+<meta name="description" content="<?= h($seoDesc ?? '') ?>">
+<meta name="author" content="<?= h($seoAuthor ?? APP_NAME) ?>">
+<meta name="robots" content="<?= h($seoRobots ?? 'index,follow') ?>">
+<link rel="canonical" href="<?= h($seoCanonical ?? $base) ?>">
+<?php if (!$isFirstRun && $cu): ?>
+<meta property="og:site_name" content="<?= h(APP_NAME) ?>">
+<meta property="og:type" content="<?= h($seoType ?? 'website') ?>">
+<meta property="og:title" content="<?= h($seoTitle ?? APP_NAME) ?>">
+<meta property="og:description" content="<?= h($seoDesc ?? '') ?>">
+<meta property="og:url" content="<?= h($seoCanonical ?? $base) ?>">
+<?php if ($seoImage): ?><meta property="og:image" content="<?= h($seoImage) ?>"><?php endif ?>
+<meta name="twitter:card" content="<?= ($seoImage && $page==='post') ? 'summary_large_image' : 'summary' ?>">
+<meta name="twitter:title" content="<?= h($seoTitle ?? APP_NAME) ?>">
+<meta name="twitter:description" content="<?= h($seoDesc ?? '') ?>">
+<?php if ($seoImage): ?><meta name="twitter:image" content="<?= h($seoImage) ?>"><?php endif ?>
+<link rel="alternate" type="application/json" title="<?= h(APP_NAME) ?> Posts API" href="<?= h($base.'?api=posts') ?>">
+<?php endif ?>
+<?php if ($seoJsonLd): ?>
+<script type="application/ld+json"><?= json_encode($seoJsonLd, JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE) ?></script>
+<?php endif ?>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#fff;--bg2:#f6f8fa;--bg3:#eaeef2;--bd:#d0d7de;--tx:#1f2328;--tx2:#636e7b;--blue:#0969da;--blue-h:#0550ae;--green:#1a7f37;--red:#cf222e;--warn:#9a6700;--purple:#8250df;--r:6px;--nav-h:56px;--mob-nav-h:56px;--sh:0 1px 3px rgba(31,35,40,.12),0 8px 24px rgba(66,74,83,.12)}
@@ -602,7 +719,7 @@ textarea{touch-action:manipulation}
 .nav-link{display:flex;align-items:center;gap:5px;padding:6px 10px;border-radius:var(--r);color:var(--tx2);font-weight:500;font-size:13px;white-space:nowrap;transition:background .15s,color .15s;min-height:36px}
 .nav-link:hover{background:var(--bg2);color:var(--tx);text-decoration:none}.nav-link.active{color:var(--blue);background:rgba(9,105,218,.06)}
 .nav-badge{background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:10px;min-width:16px;text-align:center}
-.nav-end{margin-left:auto;flex-shrink:0}
+.nav-end{margin-left:auto;flex-shrink:0;display:flex;gap:6px;align-items:center}
 @media(max-width:767px){.nav-links{display:none}.nav-end{display:none}}
 /* ── Mobile nav ── */
 .mob-nav{display:none;position:fixed;bottom:0;left:0;right:0;height:var(--mob-nav-h);background:var(--bg);border-top:1px solid var(--bd);z-index:100;padding-bottom:env(safe-area-inset-bottom)}
@@ -649,8 +766,8 @@ textarea{touch-action:manipulation}
 .file-zone:hover,.file-zone.drag{border-color:var(--blue)}.file-zone.show{display:block}
 .img-preview{max-height:180px;border-radius:var(--r);margin-top:8px;object-fit:contain;max-width:100%}
 /* ── Posts ── */
-.post{padding:14px 16px}
-.post+.post{border-top:1px solid var(--bd)}
+article.post{padding:14px 16px}
+article.post+article.post{border-top:1px solid var(--bd)}
 .post-header{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px}
 .post-meta{flex:1;min-width:0}
 .post-author-name{font-weight:600;font-size:14px;color:var(--tx);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -663,12 +780,15 @@ textarea{touch-action:manipulation}
 .post-actions{display:flex;align-items:center;gap:2px;margin-top:10px;padding-top:8px;border-top:1px solid var(--bd);flex-wrap:wrap}
 .action-btn{display:inline-flex;align-items:center;gap:4px;padding:5px 8px;border-radius:var(--r);border:none;background:transparent;color:var(--tx2);cursor:pointer;font-size:13px;transition:all .15s;min-height:32px;white-space:nowrap;text-decoration:none}
 .action-btn:hover{background:var(--bg2);color:var(--tx);text-decoration:none}.action-btn.liked{color:var(--red)}.action-btn.share-btn{margin-left:auto}
+.action-stat{display:inline-flex;align-items:center;gap:4px;padding:5px 8px;color:var(--tx2);font-size:13px;min-height:32px;white-space:nowrap}
 .remote-badge{display:inline-flex;align-items:center;background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:1px 7px;font-size:11px;color:var(--tx2);flex-shrink:0}
 .post-owner-actions{display:flex;gap:4px;margin-left:auto;flex-shrink:0}
 /* ── Last comment preview ── */
 .post-last-comment{margin-top:8px;padding:8px 10px;background:var(--bg2);border-radius:var(--r);border-left:3px solid var(--bd);font-size:13px}
 .post-last-comment-author{font-weight:600;color:var(--tx);margin-right:4px}
 .post-last-comment-text{color:var(--tx2);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+/* ── Guest CTA ── */
+.guest-cta{padding:12px 14px;background:rgba(9,105,218,.04);border-top:1px solid var(--bd);font-size:13px;color:var(--tx2);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 /* ── Buttons ── */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:6px 14px;border-radius:var(--r);border:1px solid;cursor:pointer;font-size:14px;font-weight:500;transition:all .15s;text-decoration:none;white-space:nowrap;min-height:36px}
 .btn:hover{text-decoration:none}
@@ -769,126 +889,146 @@ textarea{touch-action:manipulation}
 <body>
 
 <?php if ($isFirstRun): ?>
-<div class="login-wrap"><div class="login-card">
+<main class="login-wrap"><div class="login-card">
   <div class="login-logo"><?= h(APP_NAME) ?> <span>✦</span></div>
   <div class="login-subtitle">Welcome! Set up your instance.</div>
-  <?php if ($errors): ?><div class="alert alert-err"><?= h(implode(' ',$errors)) ?></div><?php endif ?>
+  <?php if ($errors): ?><div class="alert alert-err" role="alert"><?= h(implode(' ',$errors)) ?></div><?php endif ?>
   <form method="POST" autocomplete="off">
     <input type="hidden" name="action" value="setup">
     <div class="form-group">
-      <label class="form-label">Username <span class="text-muted" style="font-weight:400">(permanent)</span></label>
-      <input class="form-input" type="text" name="username" pattern="[a-z0-9_]{3,30}" placeholder="e.g. xsukax" required autofocus>
+      <label class="form-label" for="setup-username">Username <span class="text-muted" style="font-weight:400">(permanent)</span></label>
+      <input class="form-input" id="setup-username" type="text" name="username" pattern="[a-z0-9_]{3,30}" placeholder="e.g. xsukax" required autofocus>
       <div class="form-hint">3–30 chars · lowercase, numbers, underscores only</div>
     </div>
     <div class="alert alert-warn" style="margin-bottom:14px">🔑 Default password: <code style="background:rgba(0,0,0,.06);padding:1px 4px;border-radius:3px"><?= h(DEF_PASS) ?></code> — change after login.</div>
     <button class="btn btn-primary w-full" type="submit">Create my account →</button>
   </form>
-</div></div>
+</div></main>
 
-<?php elseif (!isLoggedIn()): ?>
-<div class="login-wrap"><div class="login-card">
+<?php elseif ($page === 'login' && !isLoggedIn()): ?>
+<main class="login-wrap"><div class="login-card">
   <div class="login-logo"><?= h(APP_NAME) ?> <span>✦</span></div>
   <div class="login-subtitle">Sign in to your instance</div>
-  <?php if ($errors): ?><div class="alert alert-err"><?= h(implode(' ',$errors)) ?></div><?php endif ?>
+  <?php if ($errors): ?><div class="alert alert-err" role="alert"><?= h(implode(' ',$errors)) ?></div><?php endif ?>
   <form method="POST">
     <input type="hidden" name="action" value="login">
     <input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>">
-    <div class="form-group"><label class="form-label">Username</label><input class="form-input" type="text" name="username" required autofocus autocomplete="username"></div>
-    <div class="form-group"><label class="form-label">Password</label><input class="form-input" type="password" name="password" required autocomplete="current-password"></div>
+    <div class="form-group"><label class="form-label" for="login-user">Username</label><input class="form-input" id="login-user" type="text" name="username" required autofocus autocomplete="username"></div>
+    <div class="form-group"><label class="form-label" for="login-pass">Password</label><input class="form-input" id="login-pass" type="password" name="password" required autocomplete="current-password"></div>
     <button class="btn btn-primary w-full" type="submit">Sign in</button>
+    <div style="text-align:center;margin-top:12px"><a href="<?= h($base) ?>" class="text-muted text-sm">← Back to <?= h(APP_NAME) ?></a></div>
   </form>
-</div></div>
+</div></main>
 
-<?php else: ?>
+<?php else: /* ── Public + Authenticated view ── */ ?>
 
 <!-- Desktop nav -->
-<nav class="nav"><div class="nav-inner">
-  <a class="nav-logo" href="<?= h($base) ?>"><?= h(APP_NAME) ?> <span style="font-size:13px">✦</span></a>
-  <div class="nav-links">
-    <a class="nav-link <?= $page==='home'?'active':'' ?>" href="<?= h($base) ?>">
-      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16"><path d="M8.354 1.146a.5.5 0 00-.707 0l-6 6-.947.947.708.708.946-.947V13.5A1.5 1.5 0 003.854 15h2.292a.5.5 0 00.5-.5v-3h2.708v3a.5.5 0 00.5.5h2.292a1.5 1.5 0 001.5-1.5V7.854l.946.947.708-.708-.947-.947-6-6z"/></svg>Home
+<header>
+<nav class="nav" aria-label="Main navigation"><div class="nav-inner">
+  <a class="nav-logo" href="<?= h($base) ?>" aria-label="<?= h(APP_NAME) ?> home"><?= h(APP_NAME) ?> <span aria-hidden="true">✦</span></a>
+  <div class="nav-links" role="list">
+    <a class="nav-link <?= $page==='home'?'active':'' ?>" href="<?= h($base) ?>" role="listitem">
+      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8.354 1.146a.5.5 0 00-.707 0l-6 6-.947.947.708.708.946-.947V13.5A1.5 1.5 0 003.854 15h2.292a.5.5 0 00.5-.5v-3h2.708v3a.5.5 0 00.5.5h2.292a1.5 1.5 0 001.5-1.5V7.854l.946.947.708-.708-.947-.947-6-6z"/></svg>Home
     </a>
-    <a class="nav-link <?= $page==='following'?'active':'' ?>" href="<?= h($base) ?>?page=following">
-      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16"><path d="M15 14s1 0 1-1-1-4-5-4-5 3-5 4 1 1 1 1h8zm-7.978-1c.001-.264.167-1.03.76-1.72C8.312 10.629 9.282 10 11 10c1.717 0 2.687.63 3.24 1.276.593.69.758 1.457.76 1.72H7.022zM11 7a2 2 0 100-4 2 2 0 000 4zm3-2a3 3 0 11-6 0 3 3 0 016 0zM6.936 9.28a5.88 5.88 0 00-1.23-.247A7.35 7.35 0 005 9c-4 0-5 3-5 4 0 .667.333 1 1 1h4.216A2.238 2.238 0 015 13c0-1.01.377-2.042 1.09-2.904.243-.294.526-.569.846-.816zM4.92 10A5.493 5.493 0 004 13H1c0-.26.164-1.03.76-1.724.545-.636 1.492-1.256 3.16-1.275zM1.5 5.5a3 3 0 116 0 3 3 0 01-6 0zm3-2a2 2 0 100 4 2 2 0 000-4z"/></svg>Following
+    <a class="nav-link <?= $page==='profile'?'active':'' ?>" href="<?= h($base.'?page=profile') ?>" role="listitem">
+      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C9.516 13.68 8.029 13 6 13c-2.03 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/></svg>Profile
     </a>
-    <a class="nav-link <?= $page==='notifications'?'active':'' ?>" href="<?= h($base) ?>?page=notifications">
-      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16"><path d="M8 16a2 2 0 001.985-1.75c.017-.137-.097-.25-.235-.25h-3.5c-.138 0-.252.113-.235.25A2 2 0 008 16zm.25-14.75A5.25 5.25 0 002.75 6.5c0 .682-.184 2.635-.476 4.046-.148.714-.314 1.22-.49 1.454H14.216c-.176-.234-.342-.74-.49-1.454-.292-1.41-.476-3.364-.476-4.046A5.25 5.25 0 008.25 1.25z"/></svg>Alerts
-      <?php if ($notifCount>0): ?><span class="nav-badge"><?= $notifCount ?></span><?php endif ?>
+    <?php if (isLoggedIn()): ?>
+    <a class="nav-link <?= $page==='following'?'active':'' ?>" href="<?= h($base.'?page=following') ?>" role="listitem">
+      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M15 14s1 0 1-1-1-4-5-4-5 3-5 4 1 1 1 1h8zm-7.978-1c.001-.264.167-1.03.76-1.72C8.312 10.629 9.282 10 11 10c1.717 0 2.687.63 3.24 1.276.593.69.758 1.457.76 1.72H7.022zM11 7a2 2 0 100-4 2 2 0 000 4zm3-2a3 3 0 11-6 0 3 3 0 016 0zM6.936 9.28a5.88 5.88 0 00-1.23-.247A7.35 7.35 0 005 9c-4 0-5 3-5 4 0 .667.333 1 1 1h4.216A2.238 2.238 0 015 13c0-1.01.377-2.042 1.09-2.904.243-.294.526-.569.846-.816zM4.92 10A5.493 5.493 0 004 13H1c0-.26.164-1.03.76-1.724.545-.636 1.492-1.256 3.16-1.275zM1.5 5.5a3 3 0 116 0 3 3 0 01-6 0zm3-2a2 2 0 100 4 2 2 0 000-4z"/></svg>Following
     </a>
-    <a class="nav-link <?= $page==='profile'?'active':'' ?>" href="<?= h($base) ?>?page=profile">
-      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C9.516 13.68 8.029 13 6 13c-2.03 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/></svg>Profile
+    <a class="nav-link <?= $page==='notifications'?'active':'' ?>" href="<?= h($base.'?page=notifications') ?>" role="listitem">
+      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 16a2 2 0 001.985-1.75c.017-.137-.097-.25-.235-.25h-3.5c-.138 0-.252.113-.235.25A2 2 0 008 16zm.25-14.75A5.25 5.25 0 002.75 6.5c0 .682-.184 2.635-.476 4.046-.148.714-.314 1.22-.49 1.454H14.216c-.176-.234-.342-.74-.49-1.454-.292-1.41-.476-3.364-.476-4.046A5.25 5.25 0 008.25 1.25z"/></svg>Alerts
+      <?php if ($notifCount>0): ?><span class="nav-badge" aria-label="<?= $notifCount ?> unread"><?= $notifCount ?></span><?php endif ?>
     </a>
-    <a class="nav-link <?= $page==='settings'?'active':'' ?>" href="<?= h($base) ?>?page=settings">
-      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16"><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 01-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 01-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 01.52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 011.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 011.255-.52l.292.159c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 01.52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 01-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.16a.873.873 0 01-1.255-.52l-.094-.319z"/></svg>Settings
+    <a class="nav-link <?= $page==='settings'?'active':'' ?>" href="<?= h($base.'?page=settings') ?>" role="listitem">
+      <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 01-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 01-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 01.52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 011.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 011.255-.52l.292.159c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 01.52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 01-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.16a.873.873 0 01-1.255-.52l-.094-.319z"/></svg>Settings
     </a>
+    <?php endif ?>
   </div>
-  <!-- Sign out always visible on desktop -->
   <div class="nav-end">
-    <form method="POST"><input type="hidden" name="action" value="logout"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><button class="btn btn-secondary btn-sm" type="submit">Sign out</button></form>
+    <?php if (isLoggedIn()): ?>
+      <form method="POST"><input type="hidden" name="action" value="logout"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><button class="btn btn-secondary btn-sm" type="submit">Sign out</button></form>
+    <?php else: ?>
+      <a class="btn btn-primary btn-sm" href="<?= h($base.'?page=login') ?>">Sign in</a>
+    <?php endif ?>
   </div>
 </div></nav>
+</header>
 
 <!-- Mobile bottom nav -->
-<nav class="mob-nav">
+<nav class="mob-nav" aria-label="Mobile navigation">
   <div class="mob-nav-inner">
-    <a class="mob-nav-item <?= $page==='home'?'active':'' ?>" href="<?= h($base) ?>">
-      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M8.354 1.146a.5.5 0 00-.707 0l-6 6-.947.947.708.708.946-.947V13.5A1.5 1.5 0 003.854 15h2.292a.5.5 0 00.5-.5v-3h2.708v3a.5.5 0 00.5.5h2.292a1.5 1.5 0 001.5-1.5V7.854l.946.947.708-.708-.947-.947-6-6z"/></svg>Home
+    <a class="mob-nav-item <?= $page==='home'?'active':'' ?>" href="<?= h($base) ?>" aria-label="Home">
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8.354 1.146a.5.5 0 00-.707 0l-6 6-.947.947.708.708.946-.947V13.5A1.5 1.5 0 003.854 15h2.292a.5.5 0 00.5-.5v-3h2.708v3a.5.5 0 00.5.5h2.292a1.5 1.5 0 001.5-1.5V7.854l.946.947.708-.708-.947-.947-6-6z"/></svg>Home
     </a>
-    <a class="mob-nav-item <?= $page==='following'?'active':'' ?>" href="<?= h($base) ?>?page=following">
-      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M15 14s1 0 1-1-1-4-5-4-5 3-5 4 1 1 1 1h8zm-7.978-1c.001-.264.167-1.03.76-1.72C8.312 10.629 9.282 10 11 10c1.717 0 2.687.63 3.24 1.276.593.69.758 1.457.76 1.72H7.022zM11 7a2 2 0 100-4 2 2 0 000 4zm3-2a3 3 0 11-6 0 3 3 0 016 0zM6.936 9.28a5.88 5.88 0 00-1.23-.247A7.35 7.35 0 005 9c-4 0-5 3-5 4 0 .667.333 1 1 1h4.216A2.238 2.238 0 015 13c0-1.01.377-2.042 1.09-2.904.243-.294.526-.569.846-.816zM4.92 10A5.493 5.493 0 004 13H1c0-.26.164-1.03.76-1.724.545-.636 1.492-1.256 3.16-1.275zM1.5 5.5a3 3 0 116 0 3 3 0 01-6 0zm3-2a2 2 0 100 4 2 2 0 000-4z"/></svg>Following
+    <a class="mob-nav-item <?= $page==='profile'?'active':'' ?>" href="<?= h($base.'?page=profile') ?>" aria-label="Profile">
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C9.516 13.68 8.029 13 6 13c-2.03 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/></svg>Profile
     </a>
-    <a class="mob-nav-item <?= $page==='notifications'?'active':'' ?>" href="<?= h($base) ?>?page=notifications">
-      <?php if ($notifCount>0): ?><span class="mob-nav-badge"><?= $notifCount ?></span><?php endif ?>
-      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M8 16a2 2 0 001.985-1.75c.017-.137-.097-.25-.235-.25h-3.5c-.138 0-.252.113-.235.25A2 2 0 008 16zm.25-14.75A5.25 5.25 0 002.75 6.5c0 .682-.184 2.635-.476 4.046-.148.714-.314 1.22-.49 1.454H14.216c-.176-.234-.342-.74-.49-1.454-.292-1.41-.476-3.364-.476-4.046A5.25 5.25 0 008.25 1.25z"/></svg>Alerts
+    <?php if (isLoggedIn()): ?>
+    <a class="mob-nav-item <?= $page==='notifications'?'active':'' ?>" href="<?= h($base.'?page=notifications') ?>" aria-label="Alerts">
+      <?php if ($notifCount>0): ?><span class="mob-nav-badge" aria-label="<?= $notifCount ?> unread"><?= $notifCount ?></span><?php endif ?>
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 16a2 2 0 001.985-1.75c.017-.137-.097-.25-.235-.25h-3.5c-.138 0-.252.113-.235.25A2 2 0 008 16zm.25-14.75A5.25 5.25 0 002.75 6.5c0 .682-.184 2.635-.476 4.046-.148.714-.314 1.22-.49 1.454H14.216c-.176-.234-.342-.74-.49-1.454-.292-1.41-.476-3.364-.476-4.046A5.25 5.25 0 008.25 1.25z"/></svg>Alerts
     </a>
-    <a class="mob-nav-item <?= $page==='profile'?'active':'' ?>" href="<?= h($base) ?>?page=profile">
-      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C9.516 13.68 8.029 13 6 13c-2.03 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/></svg>Profile
+    <a class="mob-nav-item <?= $page==='following'?'active':'' ?>" href="<?= h($base.'?page=following') ?>" aria-label="Following">
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M15 14s1 0 1-1-1-4-5-4-5 3-5 4 1 1 1 1h8zm-7.978-1c.001-.264.167-1.03.76-1.72C8.312 10.629 9.282 10 11 10c1.717 0 2.687.63 3.24 1.276.593.69.758 1.457.76 1.72H7.022zM11 7a2 2 0 100-4 2 2 0 000 4zm3-2a3 3 0 11-6 0 3 3 0 016 0zM6.936 9.28a5.88 5.88 0 00-1.23-.247A7.35 7.35 0 005 9c-4 0-5 3-5 4 0 .667.333 1 1 1h4.216A2.238 2.238 0 015 13c0-1.01.377-2.042 1.09-2.904.243-.294.526-.569.846-.816zM4.92 10A5.493 5.493 0 004 13H1c0-.26.164-1.03.76-1.724.545-.636 1.492-1.256 3.16-1.275zM1.5 5.5a3 3 0 116 0 3 3 0 01-6 0zm3-2a2 2 0 100 4 2 2 0 000-4z"/></svg>Following
     </a>
-    <a class="mob-nav-item <?= $page==='settings'?'active':'' ?>" href="<?= h($base) ?>?page=settings">
-      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 01-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 01-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 01.52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 011.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 011.255-.52l.292.159c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 01.52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 01-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.16a.873.873 0 01-1.255-.52l-.094-.319z"/></svg>Settings
+    <a class="mob-nav-item <?= $page==='settings'?'active':'' ?>" href="<?= h($base.'?page=settings') ?>" aria-label="Settings">
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 01-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 01-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 01.52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 011.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 011.255-.52l.292.159c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 01.52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 01-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.16a.873.873 0 01-1.255-.52l-.094-.319z"/></svg>Settings
     </a>
+    <?php else: ?>
+    <a class="mob-nav-item" href="<?= h($base.'?page=login') ?>" aria-label="Sign in">
+      <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5a.5.5 0 00-.5-.5h-8a.5.5 0 00-.5.5v9a.5.5 0 00.5.5h8a.5.5 0 00.5-.5v-2a.5.5 0 011 0v2A1.5 1.5 0 019.5 14h-8A1.5 1.5 0 010 12.5v-9A1.5 1.5 0 011.5 2h8A1.5 1.5 0 0111 3.5v2a.5.5 0 01-1 0v-2z"/><path d="M15.854 8.354a.5.5 0 000-.708l-3-3a.5.5 0 10-.708.708L14.293 7.5H5.5a.5.5 0 000 1h8.793l-2.147 2.146a.5.5 0 00.708.708l3-3z"/></svg>Sign in
+    </a>
+    <?php endif ?>
   </div>
 </nav>
 
+<main>
 <div class="wrap page-wrap">
-<?php if ($errors): ?><div class="alert alert-err mt-8"><?= h(implode(' ',$errors)) ?></div><?php endif ?>
-<?php if ($info):   ?><div class="alert alert-ok  mt-8"><?= h($info) ?></div><?php endif ?>
+<?php if ($errors): ?><div class="alert alert-err mt-8" role="alert"><?= h(implode(' ',$errors)) ?></div><?php endif ?>
+<?php if ($info):   ?><div class="alert alert-ok  mt-8" role="status"><?= h($info) ?></div><?php endif ?>
 
 <?php if ($page==='home'): ?>
 <div class="layout">
-  <!-- Sidebar -->
-  <div class="sidebar">
+  <!-- Sidebar (desktop only) -->
+  <aside class="sidebar" aria-label="Profile sidebar">
     <div class="card">
       <div class="sidebar-profile">
-        <div class="sidebar-cover"><?php if ($cu['cover']): ?><img src="<?= h($base.'?file=cover') ?>" alt=""><?php endif ?></div>
-        <div class="sidebar-avatar-wrap"><?= avatarEl($myAvatarUrl,$cu['name'],52) ?></div>
-        <div class="sidebar-name"><?= h($cu['name']) ?></div>
-        <div class="sidebar-uname">@<?= h($cu['username']) ?></div>
-        <?php if ($cu['bio']): ?><div class="sidebar-bio"><?= h($cu['bio']) ?></div><?php endif ?>
+        <div class="sidebar-cover"><?php if ($cu && $cu['cover']): ?><img src="<?= h($myCoverUrl) ?>" alt="Cover photo"><?php endif ?></div>
+        <div class="sidebar-avatar-wrap"><?= avatarEl($myAvatarUrl,$cu['name']??'',52) ?></div>
+        <div class="sidebar-name"><?= h($cu['name'] ?? '') ?></div>
+        <div class="sidebar-uname">@<?= h($cu['username'] ?? '') ?></div>
+        <?php if ($cu && $cu['bio']): ?><div class="sidebar-bio"><?= h($cu['bio']) ?></div><?php endif ?>
         <div class="sidebar-handle"><?= h($handle) ?></div>
         <div class="sidebar-stats mt-8">
-          <a class="stat-item" href="<?= h($base.'?page=followers') ?>"><span class="stat-num"><?= $followersCount ?></span><span class="stat-label">Followers</span></a>
-          <a class="stat-item" href="<?= h($base.'?page=following') ?>"><span class="stat-num"><?= $followingCount ?></span><span class="stat-label">Following</span></a>
+          <a class="stat-item" href="<?= h($base.'?page=profile') ?>"><span class="stat-num"><?= $followersCount ?></span><span class="stat-label">Followers</span></a>
+          <a class="stat-item" href="<?= h($base.'?page=profile') ?>"><span class="stat-num"><?= $followingCount ?></span><span class="stat-label">Following</span></a>
         </div>
       </div>
       <div class="sidebar-nav">
         <a class="sidebar-nav-item active" href="<?= h($base) ?>">🏠 Home</a>
-        <a class="sidebar-nav-item" href="<?= h($base) ?>?page=profile">👤 Profile</a>
-        <a class="sidebar-nav-item" href="<?= h($base) ?>?page=followers">👥 Followers (<?= $followersCount ?>)</a>
-        <a class="sidebar-nav-item" href="<?= h($base) ?>?page=following">➕ Following (<?= $followingCount ?>)</a>
-        <a class="sidebar-nav-item" href="<?= h($base) ?>?page=notifications">🔔 Alerts<?php if ($notifCount): ?> <span class="nav-badge"><?= $notifCount ?></span><?php endif ?></a>
+        <a class="sidebar-nav-item" href="<?= h($base.'?page=profile') ?>">👤 Profile</a>
+        <?php if (isLoggedIn()): ?>
+        <a class="sidebar-nav-item" href="<?= h($base.'?page=followers') ?>">👥 Followers (<?= $followersCount ?>)</a>
+        <a class="sidebar-nav-item" href="<?= h($base.'?page=following') ?>">➕ Following (<?= $followingCount ?>)</a>
+        <a class="sidebar-nav-item" href="<?= h($base.'?page=notifications') ?>">🔔 Alerts<?php if ($notifCount): ?> <span class="nav-badge"><?= $notifCount ?></span><?php endif ?></a>
+        <?php endif ?>
       </div>
     </div>
+    <?php if (isLoggedIn()): ?>
     <div class="card mt-12 p-16">
       <div class="fw-bold text-sm" style="margin-bottom:6px">Your handle</div>
       <code style="font-size:10px;word-break:break-all;color:var(--tx2);display:block"><?= h($handle) ?></code>
       <button class="btn btn-secondary btn-sm w-full mt-8" onclick="copyHandle()">Copy handle</button>
     </div>
-  </div>
+    <?php endif ?>
+  </aside>
 
   <!-- Main feed -->
   <div>
-    <div class="card">
+    <?php if (isLoggedIn()): ?>
+    <div class="card" aria-label="Compose post">
       <div class="compose">
         <div class="compose-tabs">
           <button class="tab-btn active" id="tab-text" onclick="switchPostType('text')">📝 Text</button>
@@ -899,31 +1039,32 @@ textarea{touch-action:manipulation}
           <input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>">
           <input type="hidden" name="post_type" id="postTypeInput" value="text">
           <div class="compose-row">
-            <?= avatarEl($myAvatarUrl,$cu['name'],38) ?>
-            <textarea class="compose-textarea" name="content" id="composeText" placeholder="What's on your mind?" maxlength="<?= MAX_CHARS ?>" oninput="updateCharCount()" rows="3"></textarea>
+            <?= avatarEl($myAvatarUrl,$cu['name']??'',38) ?>
+            <textarea class="compose-textarea" name="content" id="composeText" placeholder="What's on your mind?" maxlength="<?= MAX_CHARS ?>" oninput="updateCharCount()" rows="3" aria-label="Post content"></textarea>
           </div>
           <div id="imageUploadZone" class="file-zone" onclick="document.getElementById('imgFile').click()" ondragover="this.classList.add('drag');event.preventDefault()" ondragleave="this.classList.remove('drag')" ondrop="handleImgDrop(event)">
             <input type="file" name="image" id="imgFile" accept="image/*" style="display:none" onchange="previewImg(this)">
             📷 Tap or drag image here (JPEG/PNG/GIF/WebP · max 10 MB)
-            <img id="imgPreview" class="img-preview" style="display:none" alt="">
+            <img id="imgPreview" class="img-preview" style="display:none" alt="Image preview">
           </div>
           <div class="compose-footer">
-            <span class="char-count" id="charCount">0 / <?= MAX_CHARS ?></span>
+            <span class="char-count" id="charCount" aria-live="polite">0 / <?= MAX_CHARS ?></span>
             <button class="btn btn-primary btn-sm" type="submit">Post</button>
           </div>
         </form>
       </div>
     </div>
+    <?php endif ?>
 
-    <div class="feed-bar mt-12">
+    <div class="feed-bar mt-12" role="status" aria-live="polite">
       <span id="feedStatus">Loading feed…</span>
       <div class="feed-bar-btns">
         <button class="btn btn-secondary btn-sm" id="checkNewBtn" onclick="checkNewPosts()" style="display:none">⬆ New posts</button>
-        <button class="btn btn-secondary btn-sm" onclick="syncAndRefresh()" id="refreshBtn">🔄 Sync</button>
+        <?php if (isLoggedIn()): ?><button class="btn btn-secondary btn-sm" onclick="syncAndRefresh()" id="refreshBtn">🔄 Sync</button><?php endif ?>
       </div>
     </div>
 
-    <div id="feedSpinner" class="text-center p-16" style="display:none"><div class="spinner" style="margin:0 auto"></div></div>
+    <div id="feedSpinner" class="text-center p-16" style="display:none"><div class="spinner" style="margin:0 auto" aria-label="Loading posts"></div></div>
     <div id="feedContainer" class="card"></div>
     <div class="load-more-wrap" id="loadMoreWrap" style="display:none">
       <button class="btn btn-secondary" id="loadMoreBtn" onclick="loadMore()">Load 20 more</button>
@@ -935,63 +1076,77 @@ textarea{touch-action:manipulation}
 <div class="mt-12">
   <div class="card">
     <div class="profile-banner">
-      <div class="profile-cover"><?php if ($cu['cover']): ?><img src="<?= h($base.'?file=cover') ?>" alt=""><?php endif ?></div>
+      <div class="profile-cover"><?php if ($cu && $cu['cover']): ?><img src="<?= h($myCoverUrl) ?>" alt="<?= h($cu['name']) ?> cover photo"><?php endif ?></div>
       <div class="profile-avatar-row">
-        <div class="profile-avatar-ring"><?= avatarEl($myAvatarUrl,$cu['name'],80) ?></div>
+        <div class="profile-avatar-ring"><?= avatarEl($myAvatarUrl,$cu['name']??'',80) ?></div>
         <div class="profile-actions">
-          <a class="btn btn-secondary btn-sm" href="<?= h($base) ?>?page=settings">✏️ Edit</a>
-          <a class="btn btn-secondary btn-sm" href="<?= h($base) ?>?api=profile" target="_blank">API</a>
+          <?php if (isLoggedIn()): ?>
+          <a class="btn btn-secondary btn-sm" href="<?= h($base.'?page=settings') ?>">✏️ Edit</a>
+          <a class="btn btn-secondary btn-sm" href="<?= h($base.'?api=profile') ?>" target="_blank" rel="noopener noreferrer">API</a>
+          <?php endif ?>
         </div>
       </div>
     </div>
     <div class="profile-info-section">
-      <div class="profile-display-name"><?= h($cu['name']) ?></div>
+      <h1 class="profile-display-name"><?= h($cu['name'] ?? '') ?></h1>
       <div class="profile-handle-line"><?= h($handle) ?></div>
-      <?php if ($cu['bio']): ?><div class="profile-bio-text"><?= h($cu['bio']) ?></div><?php endif ?>
+      <?php if ($cu && $cu['bio']): ?><p class="profile-bio-text"><?= h($cu['bio']) ?></p><?php endif ?>
       <?php $links=json_decode($cu['links']??'[]',true); if ($links): ?>
         <div class="profile-links"><?php foreach ($links as $l): ?><a href="<?= h($l) ?>" target="_blank" rel="noopener noreferrer">🔗 <?= h(parse_url($l,PHP_URL_HOST)?:$l) ?></a><?php endforeach ?></div>
       <?php endif ?>
       <div class="profile-stats">
+        <?php if (isLoggedIn()): ?>
         <a class="stat-item" href="<?= h($base.'?page=followers') ?>"><span class="stat-num"><?= $followersCount ?></span><span class="stat-label">Followers</span></a>
         <a class="stat-item" href="<?= h($base.'?page=following') ?>"><span class="stat-num"><?= $followingCount ?></span><span class="stat-label">Following</span></a>
+        <?php else: ?>
+        <div class="stat-item"><span class="stat-num"><?= $followersCount ?></span><span class="stat-label">Followers</span></div>
+        <div class="stat-item"><span class="stat-num"><?= $followingCount ?></span><span class="stat-label">Following</span></div>
+        <?php endif ?>
         <div class="stat-item"><span class="stat-num"><?= count($posts) ?></span><span class="stat-label">Posts</span></div>
       </div>
     </div>
-    <div class="page-tabs"><span class="page-tab active">Posts (<?= count($posts) ?>)</span></div>
+    <div class="page-tabs" role="tablist"><span class="page-tab active" role="tab" aria-selected="true">Posts (<?= count($posts) ?>)</span></div>
     <?php if (!$posts): ?>
       <div class="empty-state"><div class="empty-icon">📭</div>No posts yet.</div>
     <?php else: foreach ($posts as $p):
-      $actor='local:'.$cu['username'];
-      $ls=db()->prepare("SELECT COUNT(*) FROM likes WHERE post_id=? AND actor=?"); $ls->execute([$p['id'],$actor]); $liked=(bool)$ls->fetchColumn();
+      $actor='local:'.($cu['username']??'');
+      $liked=false;
+      if (isLoggedIn()) { $ls=db()->prepare("SELECT COUNT(*) FROM likes WHERE post_id=? AND actor=?"); $ls->execute([$p['id'],$actor]); $liked=(bool)$ls->fetchColumn(); }
       $cs=db()->prepare("SELECT COUNT(*) FROM comments WHERE post_id=?"); $cs->execute([$p['id']]); $cCount=(int)$cs->fetchColumn();
       $lc=db()->prepare("SELECT author, content FROM comments WHERE post_id=? ORDER BY created_at DESC LIMIT 1"); $lc->execute([$p['id']]); $lastComment=$lc->fetch();
     ?>
-      <div class="post">
+      <article class="post" itemscope itemtype="https://schema.org/SocialMediaPosting">
+        <meta itemprop="datePublished" content="<?= date('c', $p['created_at']) ?>">
+        <meta itemprop="dateModified" content="<?= date('c', $p['updated_at']) ?>">
         <div class="post-header">
-          <?= avatarEl($myAvatarUrl,$cu['name'],38) ?>
-          <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=profile') ?>"><?= h($cu['name']) ?></a><div class="post-author-handle">@<?= h($cu['username']) ?></div></div>
-          <span class="post-time"><?= ago($p['created_at']) ?></span>
+          <?= avatarEl($myAvatarUrl,$cu['name']??'',38) ?>
+          <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=profile') ?>" itemprop="author"><?= h($cu['name']??'') ?></a><div class="post-author-handle">@<?= h($cu['username']??'') ?></div></div>
+          <span class="post-time"><?= timeEl($p['created_at']) ?></span>
           <?php if ($p['updated_at']>$p['created_at']): ?><span class="remote-badge">edited</span><?php endif ?>
+          <?php if (isLoggedIn()): ?>
           <div class="post-owner-actions">
-            <button class="btn btn-secondary btn-sm" onclick="openEditModal(<?= $p['id'] ?>,<?= htmlspecialchars(json_encode($p['content']),ENT_QUOTES) ?>)">✏️</button>
-            <form method="POST" style="display:inline" onsubmit="return confirm('Delete?')"><input type="hidden" name="action" value="delete_post"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="btn btn-danger btn-sm">🗑</button></form>
+            <button class="btn btn-secondary btn-sm" onclick="openEditModal(<?= $p['id'] ?>,<?= htmlspecialchars(json_encode($p['content']),ENT_QUOTES) ?>)" aria-label="Edit post">✏️</button>
+            <form method="POST" style="display:inline" onsubmit="return confirm('Delete this post?')"><input type="hidden" name="action" value="delete_post"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="btn btn-danger btn-sm" aria-label="Delete post">🗑</button></form>
           </div>
+          <?php endif ?>
         </div>
-        <div class="post-content"><?= linkify($p['content']) ?></div>
-        <?php if ($p['image_path']): ?><div class="post-image"><img src="<?= h($base.'?file=post_img&id='.$p['id']) ?>" loading="lazy" alt=""></div><?php endif ?>
+        <div class="post-content" itemprop="text"><?= linkify($p['content']) ?></div>
+        <?php if ($p['image_path']): ?><div class="post-image"><img src="<?= h($base.'?file=post_img&id='.$p['id']) ?>" loading="lazy" alt="Post image by <?= h($cu['name']??'') ?>" itemprop="image"></div><?php endif ?>
         <?php if ($lastComment): ?>
-          <div class="post-last-comment">
-            <span class="post-last-comment-author"><?= h($lastComment['author']) ?></span>
-            <div class="post-last-comment-text"><?= h($lastComment['content']) ?></div>
-          </div>
+          <div class="post-last-comment"><span class="post-last-comment-author"><?= h($lastComment['author']) ?></span><div class="post-last-comment-text"><?= h($lastComment['content']) ?></div></div>
         <?php endif ?>
         <div class="post-actions">
-          <form method="POST" style="display:inline"><input type="hidden" name="action" value="<?= $liked?'unlike':'like' ?>"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="action-btn <?= $liked?'liked':'' ?>">❤️ <?= $p['likes'] ?></button></form>
-          <a class="action-btn" href="<?= h($base.'?page=post&id='.$p['id']) ?>">💬 <?= $cCount ?></a>
-          <button class="action-btn share-btn" onclick="sharePost('<?= h($base.'?page=post&id='.$p['id']) ?>')">🔗</button>
+          <?php if (isLoggedIn()): ?>
+          <form method="POST" style="display:inline"><input type="hidden" name="action" value="<?= $liked?'unlike':'like' ?>"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="action-btn <?= $liked?'liked':'' ?>" aria-label="<?= $liked?'Unlike':'Like' ?> post">❤️ <?= $p['likes'] ?></button></form>
+          <?php else: ?><span class="action-stat">❤️ <?= $p['likes'] ?></span><?php endif ?>
+          <a class="action-btn" href="<?= h($base.'?page=post&id='.$p['id']) ?>" itemprop="url">💬 <?= $cCount ?></a>
+          <button class="action-btn share-btn" onclick="sharePost('<?= h($base.'?page=post&id='.$p['id']) ?>')" aria-label="Share post">🔗</button>
         </div>
-      </div>
+      </article>
     <?php endforeach; endif ?>
+    <?php if (!isLoggedIn()): ?>
+    <div class="guest-cta">🔒 <a href="<?= h($base.'?page=login') ?>">Sign in</a> to like and comment on posts.</div>
+    <?php endif ?>
   </div>
 </div>
 
@@ -1025,7 +1180,7 @@ textarea{touch-action:manipulation}
     <div class="alert alert-info" style="font-size:13px">Format: <code>@username@domain.com/path/to/xfedi.php</code></div>
     <form method="POST" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
       <input type="hidden" name="action" value="follow"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>">
-      <input class="form-input" type="text" name="handle" placeholder="@user@example.com/xfedi.php" style="flex:1;min-width:200px">
+      <input class="form-input" type="text" name="handle" placeholder="@user@example.com/xfedi.php" style="flex:1;min-width:200px" aria-label="Federation handle">
       <button class="btn btn-primary" type="submit">Follow</button>
     </form>
   </div>
@@ -1057,7 +1212,7 @@ textarea{touch-action:manipulation}
       $descs=['like'=>'liked your post','comment'=>'commented on your post','follow'=>'started following you'];
       foreach ($notifications as $n): ?>
         <div class="notif-item <?= !$n['is_read']?'unread':'' ?>">
-          <div style="width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0"><?= $icons[$n['type']]??'📣' ?></div>
+          <div style="width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0" aria-hidden="true"><?= $icons[$n['type']]??'📣' ?></div>
           <div style="flex:1;min-width:0">
             <?php if ($n['type']==='follow'&&preg_match('/^@[^@\s]+@[^\s]+$/',$n['actor'])): ?>
               <a href="<?= h($base.'?page=remote_profile&handle='.urlencode($n['actor'])) ?>" class="fw-bold"><?= h($n['actor']) ?></a>
@@ -1065,7 +1220,7 @@ textarea{touch-action:manipulation}
             <span class="text-muted"> <?= $descs[$n['type']]??'interacted' ?></span>
             <?php if ($n['post_id']): ?> · <a href="<?= h($base.'?page=post&id='.$n['post_id']) ?>">view post</a><?php endif ?>
             <?php if ($n['content']): ?><div class="text-muted text-sm mt-4" style="font-style:italic">"<?= h(mb_substr($n['content'],0,80)) ?>"</div><?php endif ?>
-            <div class="text-muted" style="font-size:11px;margin-top:2px"><?= ago($n['created_at']) ?></div>
+            <div class="text-muted" style="font-size:11px;margin-top:2px"><?= timeEl($n['created_at']) ?></div>
           </div>
         </div>
     <?php endforeach; endif ?>
@@ -1079,9 +1234,9 @@ textarea{touch-action:manipulation}
     <div class="settings-section">
       <form method="POST" enctype="multipart/form-data">
         <input type="hidden" name="action" value="update_profile"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>">
-        <div class="form-group"><label class="form-label">Display Name</label><input class="form-input" type="text" name="name" value="<?= h($cu['name']) ?>" maxlength="100" required></div>
-        <div class="form-group"><label class="form-label">Username <span style="color:var(--tx2);font-weight:400">(cannot be changed)</span></label><input class="form-input" type="text" value="<?= h($cu['username']) ?>" disabled style="background:var(--bg2)"></div>
-        <div class="form-group"><label class="form-label">Bio <span style="color:var(--tx2);font-weight:400">(max 300 chars)</span></label><textarea class="form-input" name="bio" rows="3" maxlength="300"><?= h($cu['bio']) ?></textarea></div>
+        <div class="form-group"><label class="form-label" for="s-name">Display Name</label><input class="form-input" id="s-name" type="text" name="name" value="<?= h($cu['name']??'') ?>" maxlength="100" required></div>
+        <div class="form-group"><label class="form-label">Username <span style="color:var(--tx2);font-weight:400">(cannot be changed)</span></label><input class="form-input" type="text" value="<?= h($cu['username']??'') ?>" disabled style="background:var(--bg2)"></div>
+        <div class="form-group"><label class="form-label" for="s-bio">Bio <span style="color:var(--tx2);font-weight:400">(max 300 chars)</span></label><textarea class="form-input" id="s-bio" name="bio" rows="3" maxlength="300"><?= h($cu['bio']??'') ?></textarea></div>
         <div class="form-group">
           <label class="form-label">Links</label>
           <div class="link-list" id="linkList">
@@ -1093,17 +1248,17 @@ textarea{touch-action:manipulation}
         </div>
         <div class="form-group">
           <label class="form-label">Profile Picture</label>
-          <?php if ($cu['avatar']): ?><img src="<?= h($base.'?file=avatar') ?>" class="avatar mt-4" width="64" height="64" alt="" style="margin-bottom:8px"><?php endif ?>
-          <input class="form-input" type="file" name="avatar" accept="image/*" style="padding:4px">
+          <?php if ($cu && $cu['avatar']): ?><img src="<?= h($myAvatarUrl) ?>" class="avatar mt-4" width="64" height="64" alt="Current profile picture" style="margin-bottom:8px"><?php endif ?>
+          <input class="form-input" type="file" name="avatar" accept="image/*" style="padding:4px" aria-label="Upload profile picture">
           <div class="form-hint">JPEG/PNG/GIF/WebP · max 5 MB · recommended 400×400 px</div>
         </div>
         <div class="form-group">
           <label class="form-label">Cover Photo</label>
           <div class="cover-preview-box">
-            <?php if ($cu['cover']): ?><img src="<?= h($base.'?file=cover') ?>" alt="" id="coverPreviewImg"><?php else: ?><img id="coverPreviewImg" style="display:none" alt=""><?php endif ?>
+            <?php if ($cu && $cu['cover']): ?><img src="<?= h($myCoverUrl) ?>" alt="Current cover photo" id="coverPreviewImg"><?php else: ?><img id="coverPreviewImg" style="display:none" alt="Cover photo preview"><?php endif ?>
             <div class="cover-res-badge">Recommended: 1500×500 px</div>
           </div>
-          <input class="form-input" type="file" name="cover" accept="image/*" style="padding:4px" onchange="previewCover(this)">
+          <input class="form-input" type="file" name="cover" accept="image/*" style="padding:4px" onchange="previewCover(this)" aria-label="Upload cover photo">
           <div class="form-hint">JPEG/PNG/GIF/WebP · max 5 MB</div>
         </div>
         <button class="btn btn-primary" type="submit">Save profile</button>
@@ -1115,9 +1270,9 @@ textarea{touch-action:manipulation}
     <div class="settings-section">
       <form method="POST">
         <input type="hidden" name="action" value="change_password"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>">
-        <div class="form-group"><label class="form-label">Current password</label><input class="form-input" type="password" name="current" required autocomplete="current-password"></div>
-        <div class="form-group"><label class="form-label">New password <span style="color:var(--tx2);font-weight:400">(min 8 chars)</span></label><input class="form-input" type="password" name="newpw" required minlength="8" autocomplete="new-password"></div>
-        <div class="form-group"><label class="form-label">Confirm new password</label><input class="form-input" type="password" name="confirm" required autocomplete="new-password"></div>
+        <div class="form-group"><label class="form-label" for="pw-cur">Current password</label><input class="form-input" id="pw-cur" type="password" name="current" required autocomplete="current-password"></div>
+        <div class="form-group"><label class="form-label" for="pw-new">New password <span style="color:var(--tx2);font-weight:400">(min 8 chars)</span></label><input class="form-input" id="pw-new" type="password" name="newpw" required minlength="8" autocomplete="new-password"></div>
+        <div class="form-group"><label class="form-label" for="pw-conf">Confirm new password</label><input class="form-input" id="pw-conf" type="password" name="confirm" required autocomplete="new-password"></div>
         <button class="btn btn-primary" type="submit">Update password</button>
       </form>
     </div>
@@ -1131,15 +1286,22 @@ textarea{touch-action:manipulation}
         <div class="form-hint">Share this handle so others can follow you.</div>
       </div>
       <div class="form-group">
+        <label class="form-label">SEO &amp; Discovery</label>
+        <div class="text-sm text-muted" style="display:flex;flex-direction:column;gap:4px">
+          <div>Sitemap: <a href="<?= h($base.'?sitemap') ?>" target="_blank" rel="noopener noreferrer"><code>?sitemap</code></a></div>
+          <div>Robots: <a href="<?= h($base.'?robots') ?>" target="_blank" rel="noopener noreferrer"><code>?robots</code></a></div>
+        </div>
+      </div>
+      <div class="form-group">
         <label class="form-label">API endpoints</label>
         <div class="text-sm text-muted" style="display:flex;flex-direction:column;gap:4px">
-          <div>Profile: <a href="<?= h($base.'?api=profile') ?>" target="_blank"><code>?api=profile</code></a></div>
-          <div>Posts: <a href="<?= h($base.'?api=posts') ?>" target="_blank"><code>?api=posts</code></a></div>
-          <div>Followers: <a href="<?= h($base.'?api=followers') ?>" target="_blank"><code>?api=followers</code></a></div>
+          <div>Profile: <a href="<?= h($base.'?api=profile') ?>" target="_blank" rel="noopener noreferrer"><code>?api=profile</code></a></div>
+          <div>Posts: <a href="<?= h($base.'?api=posts') ?>" target="_blank" rel="noopener noreferrer"><code>?api=posts</code></a></div>
+          <div>Followers: <a href="<?= h($base.'?api=followers') ?>" target="_blank" rel="noopener noreferrer"><code>?api=followers</code></a></div>
           <div>Interact: <code>?api=interact</code> (POST)</div>
         </div>
       </div>
-      <form method="POST" style="margin-top:8px">
+      <form method="POST">
         <input type="hidden" name="action" value="logout"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>">
         <button class="btn btn-danger btn-sm" type="submit">Sign out</button>
       </form>
@@ -1160,23 +1322,25 @@ textarea{touch-action:manipulation}
   ?>
     <div class="card">
       <div class="profile-banner">
-        <div class="profile-cover"><?php if (!empty($rp['cover'])): ?><img src="<?= h($rp['cover']) ?>" alt="" onerror="this.style.display='none'"><?php endif ?></div>
+        <div class="profile-cover"><?php if (!empty($rp['cover'])): ?><img src="<?= h($rp['cover']) ?>" alt="Cover photo" onerror="this.style.display='none'"><?php endif ?></div>
         <div class="profile-avatar-row">
           <div class="profile-avatar-ring"><?= avatarEl($rpAvatarUrl,$rp['name']??'?',76) ?></div>
           <div class="profile-actions">
             <span class="remote-indicator">📡 Remote</span>
-            <?php if ($isFollowing): ?>
-              <form method="POST"><input type="hidden" name="action" value="unfollow"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="handle" value="<?= h($rp['handle']??$remoteHandle) ?>"><input type="hidden" name="_back" value="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle)) ?>"><button class="btn btn-secondary btn-sm">✓ Following</button></form>
-            <?php else: ?>
-              <form method="POST"><input type="hidden" name="action" value="follow"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="handle" value="<?= h($rp['handle']??$remoteHandle) ?>"><input type="hidden" name="_back" value="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle)) ?>"><button class="btn btn-primary btn-sm">+ Follow</button></form>
+            <?php if (isLoggedIn()): ?>
+              <?php if ($isFollowing): ?>
+                <form method="POST"><input type="hidden" name="action" value="unfollow"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="handle" value="<?= h($rp['handle']??$remoteHandle) ?>"><input type="hidden" name="_back" value="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle)) ?>"><button class="btn btn-secondary btn-sm">✓ Following</button></form>
+              <?php else: ?>
+                <form method="POST"><input type="hidden" name="action" value="follow"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="handle" value="<?= h($rp['handle']??$remoteHandle) ?>"><input type="hidden" name="_back" value="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle)) ?>"><button class="btn btn-primary btn-sm">+ Follow</button></form>
+              <?php endif ?>
             <?php endif ?>
           </div>
         </div>
       </div>
       <div class="profile-info-section">
-        <div class="profile-display-name"><?= h($rp['name']??'Unknown') ?></div>
+        <h1 class="profile-display-name"><?= h($rp['name']??'Unknown') ?></h1>
         <div class="profile-handle-line"><?= h($rp['handle']??$remoteHandle) ?></div>
-        <?php if (!empty($rp['bio'])): ?><div class="profile-bio-text"><?= h($rp['bio']) ?></div><?php endif ?>
+        <?php if (!empty($rp['bio'])): ?><p class="profile-bio-text"><?= h($rp['bio']) ?></p><?php endif ?>
         <?php if (!empty($rp['links'])): ?>
           <div class="profile-links"><?php foreach ((array)$rp['links'] as $l): ?><a href="<?= h($l) ?>" target="_blank" rel="noopener noreferrer">🔗 <?= h(parse_url($l,PHP_URL_HOST)?:$l) ?></a><?php endforeach ?></div>
         <?php endif ?>
@@ -1185,28 +1349,30 @@ textarea{touch-action:manipulation}
           <div class="stat-item"><span class="stat-num"><?= $rpFollowing ?></span><span class="stat-label">Following</span></div>
         </div>
       </div>
-      <div class="page-tabs">
-        <a class="page-tab <?= $activeTab==='posts'?'active':'' ?>" href="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle).'&tab=posts') ?>">Posts (<?= count($remotePosts) ?>)</a>
-        <a class="page-tab <?= $activeTab==='followers'?'active':'' ?>" href="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle).'&tab=followers') ?>">Followers (<?= $rpFollowers ?>)</a>
+      <div class="page-tabs" role="tablist">
+        <a class="page-tab <?= $activeTab==='posts'?'active':'' ?>" href="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle).'&tab=posts') ?>" role="tab">Posts (<?= count($remotePosts) ?>)</a>
+        <a class="page-tab <?= $activeTab==='followers'?'active':'' ?>" href="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle).'&tab=followers') ?>" role="tab">Followers (<?= $rpFollowers ?>)</a>
       </div>
       <?php if ($activeTab==='posts'): ?>
         <?php if (!$remotePosts): ?>
           <div class="empty-state"><div class="empty-icon">📭</div>No posts.</div>
         <?php else: foreach ($remotePosts as $rpost): ?>
-          <div class="post">
+          <article class="post">
             <div class="post-header">
               <?= avatarEl($rpAvatarUrl,$rp['name']??'?',38) ?>
               <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=remote_profile&handle='.urlencode($rp['handle']??$remoteHandle)) ?>"><?= h($rp['name']??'Unknown') ?></a><div class="post-author-handle"><?= h($rp['handle']??'') ?></div></div>
-              <span class="post-time"><?= ago((int)($rpost['created_at']??0)) ?></span>
+              <span class="post-time"><?= timeEl((int)($rpost['created_at']??0)) ?></span>
             </div>
             <div class="post-content"><?= linkify($rpost['content']??'') ?></div>
-            <?php if (!empty($rpost['image_url'])): ?><div class="post-image"><img src="<?= h($rpost['image_url']) ?>" loading="lazy" alt="" onerror="this.parentNode.style.display='none'"></div><?php endif ?>
+            <?php if (!empty($rpost['image_url'])): ?><div class="post-image"><img src="<?= h($rpost['image_url']) ?>" loading="lazy" alt="Post image" onerror="this.parentNode.style.display='none'"></div><?php endif ?>
             <div class="post-actions">
+              <?php if (isLoggedIn()): ?>
               <button class="action-btn" onclick="remoteInteractBtn(this,'like','<?= h($remoteBase) ?>','<?= (int)$rpost['id'] ?>','<?= h($handle) ?>')">❤️ <span><?= (int)($rpost['likes']??0) ?></span></button>
+              <?php else: ?><span class="action-stat">❤️ <?= (int)($rpost['likes']??0) ?></span><?php endif ?>
               <a class="action-btn" href="<?= h($base.'?page=remote_post&handle='.urlencode($rp['handle']??$remoteHandle).'&id='.(int)$rpost['id']) ?>">💬 <?= (int)($rpost['comment_count']??0) ?> · Open</a>
-              <button class="action-btn share-btn" onclick="sharePost('<?= h($base.'?page=remote_post&handle='.urlencode($rp['handle']??$remoteHandle).'&id='.(int)$rpost['id']) ?>')">🔗</button>
+              <button class="action-btn share-btn" onclick="sharePost('<?= h($base.'?page=remote_post&handle='.urlencode($rp['handle']??$remoteHandle).'&id='.(int)$rpost['id']) ?>')" aria-label="Share">🔗</button>
             </div>
-          </div>
+          </article>
         <?php endforeach; endif ?>
       <?php elseif ($activeTab==='followers'): ?>
         <?php if (!$remoteFollowers): ?>
@@ -1215,7 +1381,7 @@ textarea{touch-action:manipulation}
           <div class="follow-item">
             <?= avatarEl($rf['avatar']??'',$rf['name']?:$rf['handle'],40) ?>
             <div class="follow-item-info"><div class="fw-bold text-sm truncate"><?= $rf['name']?h($rf['name']):'—' ?></div><div class="follow-handle truncate"><?= h($rf['handle']) ?></div></div>
-            <?php if (preg_match('/^@[^@\s]+@[^\s]+$/',$rf['handle'])): ?>
+            <?php if (preg_match('/^@[^@\s]+@[^\s]+$/',$rf['handle'])&&isLoggedIn()): ?>
               <div class="follow-item-actions">
                 <a class="btn btn-secondary btn-sm" href="<?= h($base.'?page=remote_profile&handle='.urlencode($rf['handle'])) ?>">View</a>
                 <?php $fstR=db()->prepare("SELECT COUNT(*) FROM follows WHERE handle=?"); $fstR->execute([$rf['handle']]); $alrF=(bool)$fstR->fetchColumn(); ?>
@@ -1231,32 +1397,40 @@ textarea{touch-action:manipulation}
   <?php endif ?>
 </div>
 
-<?php elseif ($page==='post'&&$singlePost): $p=$singlePost;
-  $actor='local:'.$cu['username'];
-  $ls=db()->prepare("SELECT COUNT(*) FROM likes WHERE post_id=? AND actor=?"); $ls->execute([$p['id'],$actor]); $liked=(bool)$ls->fetchColumn();
+<?php elseif ($page==='post' && $singlePost): $p=$singlePost;
+  $actor='local:'.($cu['username']??'');
+  $liked=false;
+  if (isLoggedIn()) { $ls=db()->prepare("SELECT COUNT(*) FROM likes WHERE post_id=? AND actor=?"); $ls->execute([$p['id'],$actor]); $liked=(bool)$ls->fetchColumn(); }
   $cs2=db()->prepare("SELECT COUNT(*) FROM comments WHERE post_id=?"); $cs2->execute([$p['id']]); $cCount=(int)$cs2->fetchColumn();
 ?>
 <div class="mt-12" style="max-width:640px;margin-top:12px">
   <div class="card">
-    <div class="post">
+    <article class="post" itemscope itemtype="https://schema.org/SocialMediaPosting">
+      <meta itemprop="datePublished" content="<?= date('c', $p['created_at']) ?>">
+      <meta itemprop="dateModified" content="<?= date('c', $p['updated_at']) ?>">
+      <link itemprop="url" href="<?= h($base.'?page=post&id='.$p['id']) ?>">
       <div class="post-header">
-        <?= avatarEl($myAvatarUrl,$cu['name'],38) ?>
-        <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=profile') ?>"><?= h($cu['name']) ?></a><div class="post-author-handle">@<?= h($cu['username']) ?> · <?= date('M j, Y g:i a',$p['created_at']) ?></div></div>
+        <?= avatarEl($myAvatarUrl,$cu['name']??'',38) ?>
+        <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=profile') ?>" itemprop="author"><?= h($cu['name']??'') ?></a><div class="post-author-handle">@<?= h($cu['username']??'') ?> · <?= timeEl($p['created_at']) ?></div></div>
+        <?php if (isLoggedIn()): ?>
         <div class="post-owner-actions">
-          <button class="btn btn-secondary btn-sm" onclick="openEditModal(<?= $p['id'] ?>,<?= htmlspecialchars(json_encode($p['content']),ENT_QUOTES) ?>)">✏️ Edit</button>
-          <form method="POST" style="display:inline" onsubmit="return confirm('Delete?')"><input type="hidden" name="action" value="delete_post"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="btn btn-danger btn-sm">🗑</button></form>
+          <button class="btn btn-secondary btn-sm" onclick="openEditModal(<?= $p['id'] ?>,<?= htmlspecialchars(json_encode($p['content']),ENT_QUOTES) ?>)" aria-label="Edit post">✏️ Edit</button>
+          <form method="POST" style="display:inline" onsubmit="return confirm('Delete this post?')"><input type="hidden" name="action" value="delete_post"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="btn btn-danger btn-sm" aria-label="Delete post">🗑</button></form>
         </div>
+        <?php endif ?>
       </div>
-      <div class="post-content"><?= linkify($p['content']) ?></div>
-      <?php if ($p['image_path']): ?><div class="post-image"><img src="<?= h($base.'?file=post_img&id='.$p['id']) ?>" alt=""></div><?php endif ?>
+      <div class="post-content" itemprop="text"><?= linkify($p['content']) ?></div>
+      <?php if ($p['image_path']): ?><div class="post-image"><img src="<?= h($base.'?file=post_img&id='.$p['id']) ?>" alt="Post image by <?= h($cu['name']??'') ?>" itemprop="image"></div><?php endif ?>
       <div class="post-actions">
-        <form method="POST" style="display:inline"><input type="hidden" name="action" value="<?= $liked?'unlike':'like' ?>"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="action-btn <?= $liked?'liked':'' ?>">❤️ <?= $p['likes'] ?></button></form>
-        <span class="action-btn">💬 <?= $cCount ?></span>
-        <button class="action-btn share-btn" onclick="sharePost('<?= h($base.'?page=post&id='.$p['id']) ?>')">🔗 Share</button>
+        <?php if (isLoggedIn()): ?>
+        <form method="POST" style="display:inline"><input type="hidden" name="action" value="<?= $liked?'unlike':'like' ?>"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $p['id'] ?>"><button class="action-btn <?= $liked?'liked':'' ?>" aria-label="<?= $liked?'Unlike':'Like' ?> post">❤️ <?= $p['likes'] ?></button></form>
+        <?php else: ?><span class="action-stat">❤️ <?= $p['likes'] ?></span><?php endif ?>
+        <span class="action-stat">💬 <?= $cCount ?></span>
+        <button class="action-btn share-btn" onclick="sharePost('<?= h($base.'?page=post&id='.$p['id']) ?>')" aria-label="Share post">🔗 Share</button>
       </div>
-    </div>
+    </article>
     <?php if ($comments): ?>
-      <div class="comment-list">
+      <section class="comment-list" aria-label="Comments">
         <?php foreach ($comments as $c): $ca=resolveCommentAuthor($c,$myAvatarUrl,$base); ?>
           <div class="comment-item">
             <?= avatarEl($ca['avatar'],$ca['display'],32) ?>
@@ -1265,19 +1439,23 @@ textarea{touch-action:manipulation}
               <?php else: ?><span class="comment-author"><?= h($ca['display']) ?></span><?php endif ?>
               <?php if ($c['is_remote']): ?><span class="remote-badge">remote</span><?php endif ?>
               <div class="comment-text"><?= linkify($c['content']) ?></div>
-              <div class="comment-time"><?= ago($c['created_at']) ?></div>
+              <div class="comment-time"><?= timeEl($c['created_at']) ?></div>
             </div>
           </div>
         <?php endforeach ?>
-      </div>
+      </section>
     <?php endif ?>
+    <?php if (isLoggedIn()): ?>
     <div class="comment-form">
       <form method="POST">
         <input type="hidden" name="action" value="comment"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" value="<?= $singlePost['id'] ?>">
-        <div class="flex gap-8"><?= avatarEl($myAvatarUrl,$cu['name'],34) ?><textarea class="compose-textarea" name="comment" placeholder="Write a comment…" rows="2" maxlength="500" style="min-height:56px"></textarea></div>
+        <div class="flex gap-8"><?= avatarEl($myAvatarUrl,$cu['name']??'',34) ?><textarea class="compose-textarea" name="comment" placeholder="Write a comment…" rows="2" maxlength="500" style="min-height:56px" aria-label="Comment"></textarea></div>
         <div style="text-align:right;margin-top:8px"><button class="btn btn-primary btn-sm">Comment</button></div>
       </form>
     </div>
+    <?php else: ?>
+    <div class="guest-cta">🔒 <a href="<?= h($base.'?page=login') ?>">Sign in</a> to leave a comment.</div>
+    <?php endif ?>
   </div>
 </div>
 
@@ -1290,25 +1468,27 @@ textarea{touch-action:manipulation}
   <?php if (!$remotePostData||isset($remotePostData['error'])): ?>
     <div class="card p-16">
       <div class="alert alert-err">Could not load this post.</div>
-      <?php if (!empty($remoteBase)&&!empty($_GET['id'])): ?><div class="mt-8"><a href="<?= h($remoteBase.'?page=post&id='.(int)$_GET['id']) ?>" target="_blank" class="btn btn-secondary btn-sm">Try on original server ↗</a></div><?php endif ?>
+      <?php if (!empty($remoteBase)&&!empty($_GET['id'])): ?><div class="mt-8"><a href="<?= h($remoteBase.'?page=post&id='.(int)$_GET['id']) ?>" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">Try on original server ↗</a></div><?php endif ?>
     </div>
   <?php else: $rp2=$remotePostData; $rpAuth=$remoteProfileData??[]; $rpAvatarUrl=$rpAuth['avatar']??''; $rpAuthorUsername=$rpAuth['username']??null; ?>
     <div class="card">
-      <div class="post">
+      <article class="post">
         <div class="post-header">
           <?= avatarEl($rpAvatarUrl,$rpAuth['name']??'?',38) ?>
-          <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle)) ?>"><?= h($rpAuth['name']??'Unknown') ?></a><div class="post-author-handle"><?= h($remoteHandle) ?> · <?= date('M j, Y g:i a',(int)($rp2['created_at']??0)) ?></div></div>
+          <div class="post-meta"><a class="post-author-name" href="<?= h($base.'?page=remote_profile&handle='.urlencode($remoteHandle)) ?>"><?= h($rpAuth['name']??'Unknown') ?></a><div class="post-author-handle"><?= h($remoteHandle) ?> · <?= timeEl((int)($rp2['created_at']??0)) ?></div></div>
         </div>
         <div class="post-content"><?= linkify($rp2['content']??'') ?></div>
-        <?php if (!empty($rp2['image_url'])): ?><div class="post-image"><img src="<?= h($rp2['image_url']) ?>" alt="" onerror="this.parentNode.style.display='none'"></div><?php endif ?>
+        <?php if (!empty($rp2['image_url'])): ?><div class="post-image"><img src="<?= h($rp2['image_url']) ?>" alt="Remote post image" onerror="this.parentNode.style.display='none'"></div><?php endif ?>
         <div class="post-actions">
+          <?php if (isLoggedIn()): ?>
           <button class="action-btn" id="remLikeBtn" onclick="remotePostLike(this)">❤️ <span id="remLikeCount"><?= (int)($rp2['likes']??0) ?></span></button>
-          <span class="action-btn">💬 <span id="remCommentCount"><?= count($rp2['comments']??[]) ?></span></span>
-          <button class="action-btn share-btn" onclick="sharePost(window.location.href)">🔗 Share</button>
-          <a class="action-btn" href="<?= h($remoteBase.'?page=post&id='.(int)($rp2['id']??0)) ?>" target="_blank" style="font-size:11px">Original ↗</a>
+          <?php else: ?><span class="action-stat">❤️ <?= (int)($rp2['likes']??0) ?></span><?php endif ?>
+          <span class="action-stat">💬 <span id="remCommentCount"><?= count($rp2['comments']??[]) ?></span></span>
+          <button class="action-btn share-btn" onclick="sharePost(window.location.href)" aria-label="Share">🔗 Share</button>
+          <a class="action-btn" href="<?= h($remoteBase.'?page=post&id='.(int)($rp2['id']??0)) ?>" target="_blank" rel="noopener noreferrer" style="font-size:11px">Original ↗</a>
         </div>
-      </div>
-      <div id="remoteCommentList" class="comment-list">
+      </article>
+      <section id="remoteCommentList" class="comment-list" aria-label="Comments">
         <?php if (!empty($rp2['comments'])): foreach ($rp2['comments'] as $rc):
           $rcIsAuthor=isset($rpAuthorUsername)&&($rc['author']??'')===$rpAuthorUsername;
           $rcAvatar=$rcIsAuthor?$rpAvatarUrl:'';
@@ -1321,44 +1501,50 @@ textarea{touch-action:manipulation}
               <a class="comment-author" href="<?= h($rcProfileUrl) ?>"><?= h($rcDisplay) ?></a>
               <?php if (!empty($rc['is_remote'])): ?><span class="remote-badge">remote</span><?php endif ?>
               <div class="comment-text"><?= linkify($rc['content']??'') ?></div>
-              <div class="comment-time"><?= ago((int)($rc['created_at']??0)) ?></div>
+              <div class="comment-time"><?= timeEl((int)($rc['created_at']??0)) ?></div>
             </div>
           </div>
         <?php endforeach; endif ?>
-      </div>
+      </section>
+      <?php if (isLoggedIn()): ?>
       <div class="comment-form">
-        <div class="alert alert-info" style="margin-bottom:10px;font-size:12px">💬 Comment posts on the <strong>original server</strong> as <code><?= h($handle) ?></code></div>
-        <div class="flex gap-8"><?= avatarEl($myAvatarUrl,$cu['name'],34) ?><textarea class="compose-textarea" id="remoteCommentText" placeholder="Write a comment…" rows="2" maxlength="500" style="min-height:56px"></textarea></div>
+        <div class="alert alert-info" style="margin-bottom:10px;font-size:12px">💬 Commenting as <code><?= h($handle) ?></code> on the original server</div>
+        <div class="flex gap-8"><?= avatarEl($myAvatarUrl,$cu['name']??'',34) ?><textarea class="compose-textarea" id="remoteCommentText" placeholder="Write a comment…" rows="2" maxlength="500" style="min-height:56px" aria-label="Comment"></textarea></div>
         <div style="text-align:right;margin-top:8px"><button class="btn btn-primary btn-sm" id="remoteCommentBtn" onclick="submitRemoteComment()">Post comment</button></div>
-        <div id="remoteCommentError" class="alert alert-err mt-8" style="display:none"></div>
+        <div id="remoteCommentError" class="alert alert-err mt-8" style="display:none" role="alert"></div>
       </div>
+      <?php else: ?>
+      <div class="guest-cta">🔒 <a href="<?= h($base.'?page=login') ?>">Sign in</a> to interact with this post.</div>
+      <?php endif ?>
     </div>
   <?php endif ?>
 </div>
 
-<?php endif; ?>
-</div><!-- /wrap -->
+<?php endif; /* page switch */ ?>
+</div>
+</main>
 
 <!-- Edit modal -->
-<div class="modal-overlay" id="editModal">
+<div class="modal-overlay" id="editModal" role="dialog" aria-modal="true" aria-label="Edit post">
   <div class="modal">
-    <div class="modal-title">Edit Post <button class="modal-close" onclick="closeEditModal()">✕</button></div>
+    <div class="modal-title">Edit Post <button class="modal-close" onclick="closeEditModal()" aria-label="Close">✕</button></div>
     <form method="POST">
       <input type="hidden" name="action" value="edit_post"><input type="hidden" name="_csrf" value="<?= h($csrf_token) ?>"><input type="hidden" name="post_id" id="editPostId">
-      <div class="form-group"><textarea class="form-input" name="content" id="editContent" rows="4" maxlength="<?= MAX_CHARS ?>" oninput="updateEditCount()"></textarea><div class="form-hint text-sm" id="editCharCount">0 / <?= MAX_CHARS ?></div></div>
+      <div class="form-group"><textarea class="form-input" name="content" id="editContent" rows="4" maxlength="<?= MAX_CHARS ?>" oninput="updateEditCount()" aria-label="Post content"></textarea><div class="form-hint text-sm" id="editCharCount" aria-live="polite">0 / <?= MAX_CHARS ?></div></div>
       <div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button><button type="submit" class="btn btn-primary">Save</button></div>
     </form>
   </div>
 </div>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
-<?php endif; ?>
+<?php endif; /* not firstRun + not login page */ ?>
 
 <script>
-const MAX  = <?= MAX_CHARS ?>;
-const BASE = <?= json_encode($base) ?>;
-const CSRF = <?= json_encode($csrf_token) ?>;
-const HNDL = <?= json_encode($isFirstRun ? '' : ($handle ?? '')) ?>;
+const MAX       = <?= MAX_CHARS ?>;
+const BASE      = <?= json_encode($base) ?>;
+const CSRF      = <?= json_encode($csrf_token) ?>;
+const HNDL      = <?= json_encode($isFirstRun ? '' : ($handle ?? '')) ?>;
+const LOGGED_IN = <?= json_encode(!$isFirstRun && isLoggedIn()) ?>;
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function updateCharCount(){const n=document.getElementById('composeText')?.value.length||0,el=document.getElementById('charCount');if(el){el.textContent=n+' / '+MAX;el.className='char-count'+(n>MAX*.85?' warn':'')+(n>=MAX?' over':'');}}
@@ -1379,8 +1565,9 @@ function addLinkField(){const l=document.getElementById('linkList');if(!l)return
 // ── Rendering utils ───────────────────────────────────────────────────────────
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');}
 function agoJS(ts){const d=Math.max(0,Math.floor(Date.now()/1000)-ts);if(d<60)return d+'s';if(d<3600)return Math.floor(d/60)+'m';if(d<86400)return Math.floor(d/3600)+'h';if(d<604800)return Math.floor(d/86400)+'d';return new Date(ts*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});}
+function timeElJS(ts){const iso=new Date(ts*1000).toISOString(),title=new Date(ts*1000).toLocaleString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});return`<time datetime="${iso}" title="${title}">${agoJS(ts)}</time>`;}
 function linkifyJS(t){return String(t).split(/(https?:\/\/\S+)/gi).map((p,i)=>{if(i%2===0)return p.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');const u=p.replace(/[.,;:!?)'"\}>]+$/,''),d=u.length>55?u.slice(0,52)+'…':u;return`<a href="${u.replace(/"/g,'&quot;')}" target="_blank" rel="noopener noreferrer" style="word-break:break-all">${esc(d)}</a>`;}).join('');}
-function avatarElJS(url,name,size){const init=esc(((name||'?').charAt(0)).toUpperCase()),fs=Math.floor(size*.4);if(url){const fb=`<div class='avatar-placeholder' style='width:${size}px;height:${size}px;font-size:${fs}px'>${init}</div>`;return`<img src="${esc(url)}" class="avatar" width="${size}" height="${size}" alt="" onerror="this.outerHTML='${fb.replace(/'/g,"\\'")}'">`;}return`<div class="avatar-placeholder" style="width:${size}px;height:${size}px;font-size:${fs}px">${init}</div>`;}
+function avatarElJS(url,name,size){const init=esc(((name||'?').charAt(0)).toUpperCase()),fs=Math.floor(size*.4);if(url){const fb=`<div class='avatar-placeholder' style='width:${size}px;height:${size}px;font-size:${fs}px'>${init}</div>`;return`<img src="${esc(url)}" class="avatar" width="${size}" height="${size}" alt="${esc(name)}" loading="lazy" onerror="this.outerHTML='${fb.replace(/'/g,"\\'")}'">`;}return`<div class="avatar-placeholder" style="width:${size}px;height:${size}px;font-size:${fs}px" aria-label="${esc(name)}">${init}</div>`;}
 
 // ── Remote interaction ────────────────────────────────────────────────────────
 async function remoteInteractBtn(btn,type,remoteBase,postId,actor){
@@ -1441,12 +1628,13 @@ function renderRemoteComments(comments){
     const cAvatar=isAuthor?REMOTE_AVATAR:'';const cDisplay=c.author||'Unknown';
     const isFed=/^@[^@\s]+@[^\s]+$/.test(cDisplay);
     const cUrl=isFed?BASE+'?page=remote_profile&handle='+encodeURIComponent(cDisplay):profileUrl;
-    return`<div class="comment-item">${avatarElJS(cAvatar,cDisplay,30)}<div class="comment-body"><a class="comment-author" href="${esc(cUrl)}">${esc(cDisplay)}</a>${c.is_remote?'<span class="remote-badge">remote</span>':''}<div class="comment-text">${linkifyJS(c.content||'')}</div><div class="comment-time">${agoJS(c.created_at||0)}</div></div></div>`;
+    return`<div class="comment-item">${avatarElJS(cAvatar,cDisplay,30)}<div class="comment-body"><a class="comment-author" href="${esc(cUrl)}">${esc(cDisplay)}</a>${c.is_remote?'<span class="remote-badge">remote</span>':''}<div class="comment-text">${linkifyJS(c.content||'')}</div><div class="comment-time">${timeElJS(c.created_at||0)}</div></div></div>`;
   }).join('');
 }
 <?php endif ?>
 
 <?php if ($page==='home'): ?>
+// ── Feed state ────────────────────────────────────────────────────────────────
 let feedBefore   = 9999999999;
 let feedNewest   = 0;
 let feedLoading  = false;
@@ -1467,31 +1655,30 @@ function renderPost(p){
   const avUrl  = src==='local'?MY_AVATAR:(author.avatar||'');
   const profUrl= src==='local'?(BASE+'?page=profile'):(p._profile_url||'');
   const postUrl= p.post_url||(src==='local'?BASE+'?page=post&id='+p.id:'#');
-  const key    = postKey(p);
-  const imgHtml= p.image_url?`<div class="post-image"><img src="${esc(p.image_url)}" loading="lazy" alt="" onerror="this.parentNode.style.display='none'"></div>`:'';
+  const imgHtml= p.image_url?`<div class="post-image"><img src="${esc(p.image_url)}" loading="lazy" alt="Post image by ${esc(name)}" onerror="this.parentNode.style.display='none'"></div>`:'';
   const remBadge=src==='remote'?`<a href="${esc(profUrl)}" class="remote-badge" style="margin-bottom:6px;display:inline-flex;text-decoration:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📡 ${esc(p._handle||'remote')}</a>`:'';
   const edited =(p.updated_at&&p.updated_at>p.created_at)?'<span class="remote-badge">edited</span>':'';
   const nameEl =profUrl?`<a class="post-author-name" href="${esc(profUrl)}">${esc(name)}</a>`:`<span class="post-author-name">${esc(name)}</span>`;
-  // Last comment preview
-  const lc = p._last_comment;
-  const commentPreview = lc ? `<div class="post-last-comment"><span class="post-last-comment-author">${esc(lc.author)}</span><div class="post-last-comment-text">${esc(lc.content)}</div></div>` : '';
-  let actions;
-  if(src==='local'){
-    actions=`<form method="POST" style="display:inline"><input type="hidden" name="action" value="${p._liked?'unlike':'like'}"><input type="hidden" name="_csrf" value="${CSRF}"><input type="hidden" name="post_id" value="${p.id}"><button class="action-btn${p._liked?' liked':''}">❤️ ${p.likes||0}</button></form>`
-           +`<a class="action-btn" href="${esc(postUrl)}">💬 ${p._comments||0}</a>`
-           +`<button class="action-btn share-btn" onclick="sharePost('${esc(postUrl)}')">🔗</button>`;
-  }else{
+  const lc=p._last_comment;
+  const commentPreview=lc?`<div class="post-last-comment"><span class="post-last-comment-author">${esc(lc.author)}</span><div class="post-last-comment-text">${esc(lc.content)}</div></div>`:'';
+  let likeHtml, commentHtml;
+  if(src==='local'&&LOGGED_IN){
+    likeHtml=`<form method="POST" style="display:inline"><input type="hidden" name="action" value="${p._liked?'unlike':'like'}"><input type="hidden" name="_csrf" value="${CSRF}"><input type="hidden" name="post_id" value="${p.id}"><button class="action-btn${p._liked?' liked':''}" aria-label="${p._liked?'Unlike':'Like'} post">❤️ ${p.likes||0}</button></form>`;
+  }else if(src==='remote'&&LOGGED_IN){
     const rb=p._remote_base||'';
-    actions=`<button class="action-btn" onclick="remoteInteractBtn(this,'like','${esc(rb)}','${p.id}','${esc(HNDL)}')">❤️ <span>${p.likes||0}</span></button>`
-           +`<a class="action-btn" href="${esc(postUrl)}">💬 ${p.comment_count||(p.comments?p.comments.length:0)} · Open</a>`
-           +`<button class="action-btn share-btn" onclick="sharePost('${esc(postUrl)}')">🔗</button>`;
+    likeHtml=`<button class="action-btn" onclick="remoteInteractBtn(this,'like','${esc(rb)}','${p.id}','${esc(HNDL)}')" aria-label="Like post">❤️ <span>${p.likes||0}</span></button>`;
+  }else{
+    likeHtml=`<span class="action-stat">❤️ ${p.likes||0}</span>`;
   }
-  return`<div class="post" data-post-key="${esc(key)}" data-ts="${p.created_at||0}">
+  commentHtml=`<a class="action-btn" href="${esc(postUrl)}" aria-label="Comments">💬 ${src==='local'?(p._comments||0):(p.comment_count||(p.comments?p.comments.length:0))}${src==='remote'?' · Open':''}</a>`;
+  const shareHtml=`<button class="action-btn share-btn" onclick="sharePost('${esc(postUrl)}')" aria-label="Share post">🔗</button>`;
+  return`<article class="post" itemscope itemtype="https://schema.org/SocialMediaPosting" data-post-key="${esc(postKey(p))}" data-ts="${p.created_at||0}">
+    <meta itemprop="datePublished" content="${new Date((p.created_at||0)*1000).toISOString()}">
     ${remBadge}
-    <div class="post-header">${avatarElJS(avUrl,name,38)}<div class="post-meta">${nameEl}<div class="post-author-handle">${uname?'@'+esc(uname):''}</div></div><span class="post-time">${agoJS(p.created_at||0)}</span>${edited}</div>
-    <div class="post-content">${linkifyJS(p.content||'')}</div>${imgHtml}${commentPreview}
-    <div class="post-actions">${actions}</div>
-  </div>`;
+    <div class="post-header">${avatarElJS(avUrl,name,38)}<div class="post-meta">${nameEl}<div class="post-author-handle">${uname?'@'+esc(uname):''}</div></div><span class="post-time">${timeElJS(p.created_at||0)}</span>${edited}</div>
+    <div class="post-content" itemprop="text">${linkifyJS(p.content||'')}</div>${imgHtml}${commentPreview}
+    <div class="post-actions">${likeHtml}${commentHtml}${shareHtml}</div>
+  </article>`;
 }
 
 async function loadFeed(append=false){
@@ -1509,7 +1696,7 @@ async function loadFeed(append=false){
     const container=document.getElementById('feedContainer');if(!container){feedLoading=false;return;}
     const posts=data.posts||[];
     if(!posts.length&&!append){
-      container.innerHTML='<div class="empty-state"><div class="empty-icon">📭</div>No posts yet. Follow some accounts or make your first post!</div>';
+      container.innerHTML='<div class="empty-state"><div class="empty-icon">📭</div>No posts yet.</div>';
       feedHasMore=false;
     }else{
       let added=0;
@@ -1541,8 +1728,7 @@ async function checkNewPosts(){
   if(btn){btn.disabled=true;btn.textContent='⏳ Checking…';}
   try{
     const data=await(await fetch(`?ajax=feed&mode=after&after=${feedNewest}`)).json();
-    const posts=data.posts||[];
-    const container=document.getElementById('feedContainer');
+    const posts=data.posts||[];const container=document.getElementById('feedContainer');
     let added=0;
     posts.sort((a,b)=>(a.created_at||0)-(b.created_at||0));
     posts.forEach(p=>{
@@ -1561,8 +1747,8 @@ async function checkNewPosts(){
 }
 
 async function syncAndRefresh(){
-  const btn=document.getElementById('refreshBtn');
-  const status=document.getElementById('feedStatus');
+  if(!LOGGED_IN)return;
+  const btn=document.getElementById('refreshBtn');const status=document.getElementById('feedStatus');
   if(btn){btn.disabled=true;btn.textContent='⏳ Syncing…';}
   if(status)status.textContent='Syncing followed instances…';
   try{
