@@ -1,239 +1,212 @@
-# XFedi - xsukax Federated Social Media Platform
-> **A self-hosted, single-file federated social media platform built in PHP.**
+# XFedi ✦
+
+> **A single-file, self-hosted federated social media platform built in PHP.**
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![PHP](https://img.shields.io/badge/PHP-8.1%2B-purple.svg)](https://www.php.net/)
-[![SQLite](https://img.shields.io/badge/Database-SQLite-green.svg)](https://www.sqlite.org/)
-[![GitHub](https://img.shields.io/badge/GitHub-xsukax%2FXFedi-black.svg)](https://github.com/xsukax/XFedi)
+[![PHP](https://img.shields.io/badge/PHP-8.0%2B-777BB4?logo=php&logoColor=white)](https://php.net)
+[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Single File](https://img.shields.io/badge/Deploy-Single%20File-success)](https://github.com/xsukax/XFedi)
+
+---
+
+**Check my Instance:** [https://xsukax.net/xfedi.php](https://xsukax.net/xfedi.php) 
 
 ---
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
-- [Security and Privacy Benefits](#security-and-privacy-benefits)
-- [Features and Advantages](#features-and-advantages)
-- [Installation Instructions](#installation-instructions)
+- [Security & Privacy](#security--privacy)
+- [Features & Advantages](#features--advantages)
+- [Requirements](#requirements)
+- [Installation](#installation)
 - [php.ini Configuration](#phpini-configuration)
 - [Usage Guide](#usage-guide)
-- [Architecture & Diagrams](#architecture--diagrams)
-- [API Reference](#api-reference)
-- [Licensing Information](#licensing-information)
+- [Architecture & Flow](#architecture--flow)
+- [Federation API](#federation-api)
+- [License](#license)
 
 ---
 
 ## Project Overview
 
-**XFedi** is a lightweight, fully self-hosted federated social media platform delivered as a **single PHP file** (`xfedi.php`). It requires no frameworks, no Composer dependencies, and no complex infrastructure — just a PHP-enabled web server and a writable directory.
+**XFedi** is a privacy-first, self-hosted federated social media platform delivered as a single PHP file (`xfedi.php`). It enables individuals to own and control their social presence without relying on third-party infrastructure. Instances of XFedi can federate with one another — users can follow remote accounts, receive posts from followed instances into a unified feed, and interact (like, comment) across server boundaries, all through a clean, lightweight API.
 
-At its core, XFedi enables you to own your social identity. You run your own instance, publish posts (text and images), and interact with users on other XFedi instances through a simple JSON-based federation API. It is purpose-built for developers, privacy-conscious individuals, and small communities who want the social web experience without surrendering their data to centralized platforms.
-
-The entire application — routing, database schema, federation logic, file serving, and UI — lives within `xfedi.php`. A SQLite database (`xfedi.db`) and an `uploads/` directory are auto-created on first run. Nothing else is needed.
+XFedi is designed for developers, privacy-conscious individuals, and communities who want the social web without sacrificing data sovereignty. The entire stack — database, file storage, authentication, federation engine, and web UI — lives in one deployable file with **zero external dependencies**.
 
 ---
 
-## Security and Privacy Benefits
+## Security & Privacy
 
-XFedi has been designed from the ground up with security and user privacy as first-class concerns.
+XFedi integrates multiple layers of security and privacy protection by design:
 
-### Cross-Site Request Forgery (CSRF) Protection
-Every state-changing POST action requires a valid CSRF token, generated with `random_bytes(16)` and validated via `hash_equals()` — resistant to timing-based attacks. No form submission is processed without it.
-
-### Password Security
-User passwords are stored exclusively as hashes using PHP's `password_hash()` with the `PASSWORD_DEFAULT` algorithm (bcrypt). Plain-text passwords are never persisted anywhere in the system. The minimum enforced password length is 8 characters.
-
-### Session Security
-On login and first-run setup, `session_regenerate_id(true)` is called to issue a new session ID and invalidate the old one, protecting against session fixation attacks.
-
-### XSS Prevention
-All user-supplied content rendered in HTML is escaped through a dedicated `h()` helper built on `htmlspecialchars()` with `ENT_QUOTES | ENT_SUBSTITUTE` and UTF-8 encoding. URLs within post content are linkified safely, ensuring no user-generated markup can execute in a browser.
-
-### Secure File Upload Handling
-Uploaded images are validated on two independent axes:
-- **MIME type** — verified via `mime_content_type()` against an explicit allowlist (`image/jpeg`, `image/png`, `image/gif`, `image/webp`).
-- **File extension** — validated against its own allowlist independently of the MIME check.
-
-Stored filenames are replaced with cryptographically random names (`bin2hex(random_bytes(8))`), preventing enumeration and path-based attacks. File size limits are enforced server-side (5 MB for avatars/covers, 10 MB for post images).
-
-### Upload Directory Hardening
-At startup, XFedi automatically writes an `.htaccess` file into the `uploads/` directory that disables directory indexing and turns off PHP execution — ensuring that even if a file were somehow written there, it cannot be executed as a script.
-
-### SQL Injection Prevention
-All database interactions use PDO prepared statements with parameterized queries. Raw SQL string interpolation with user data does not occur anywhere in the codebase. The SQLite connection operates in exception mode (`PDO::ERRMODE_EXCEPTION`) with foreign keys enforced.
-
-### Data Ownership and Sovereignty
-Your data lives entirely on your own server. There are no third-party analytics, no advertising SDKs, no external tracking pixels, and no telemetry calls home. Federation is peer-to-peer between XFedi instances you choose to follow.
-
-### Federation Input Sanitization
-Remote interaction payloads (likes, comments, follow events) received via the federation API are sanitized: actor handles are filtered with a strict regex, content is stripped of HTML tags, and all values are clamped to safe lengths before being written to the database.
+| Concern | Mitigation |
+|---|---|
+| **CSRF attacks** | Every mutating POST action requires a server-generated, session-bound CSRF token validated via `hash_equals()` (constant-time comparison). |
+| **Password storage** | Passwords are hashed using PHP's `password_hash()` with `PASSWORD_DEFAULT` (bcrypt). Plain-text passwords are never stored or logged. |
+| **Session fixation** | `session_regenerate_id(true)` is called on every successful login to invalidate the prior session ID. |
+| **File upload safety** | Uploaded files are validated by MIME type (`mime_content_type()`) and extension whitelist. Filenames are randomised using `bin2hex(random_bytes(8))` to prevent enumeration. |
+| **Upload directory hardening** | The `uploads/` directory is automatically provisioned with an `.htaccess` that disables directory indexing and PHP execution (`php_flag engine off`). |
+| **Output encoding** | All user-supplied data rendered in HTML passes through `htmlspecialchars()` with `ENT_QUOTES | ENT_SUBSTITUTE` to prevent XSS. |
+| **SQL injection** | All database queries use PDO prepared statements with parameterised bindings. |
+| **Remote actor validation** | Remote federation handles are validated against a strict regex (`@user@domain`) before any network request or database write. |
+| **Remote avatar / URL trust** | Remote avatar URLs are validated with `FILTER_VALIDATE_URL` before storage. |
+| **Input length clamping** | Actor handles, comment content, and profile fields are clamped to defined maximum lengths server-side before persistence. |
+| **Private page gating** | Settings, notifications, followers, and following pages require an authenticated session; unauthenticated access is redirected to the login page. |
+| **SEO robots control** | Private pages emit `noindex,nofollow` robots meta tags to prevent search engine indexing of sensitive user data. |
+| **Data sovereignty** | All data is stored locally in an SQLite database (`xfedi.db`) and `uploads/` on your own server — no third-party services, tracking scripts, or CDN dependencies. |
 
 ---
 
-## Features and Advantages
+## Features & Advantages
 
-### Core Functionality
-- **Text and image posts** with a 500-character limit per post, supporting edit and delete operations.
-- **Likes and comments** — both local (on your instance) and cross-instance via the federation API.
-- **User profile** with display name, bio, avatar, cover photo, and up to multiple custom links.
-- **Notifications** for incoming likes, comments, and follow events from remote instances.
-- **Password management** with current-password verification and confirmation matching.
-
-### Federation
-- Follow remote XFedi users by their federated handle (`@username@host/xfedi.php`).
-- View remote profiles, their posts, and their followers directly from your instance.
-- Like and comment on remote posts — interactions are relayed to the origin server.
-- Feed cache stores remote posts locally, enabling a unified home feed blending local and remote content.
-- Automatic sync fetches up to 5 random followed instances per refresh cycle, updating cached posts and profile metadata.
-
-### User Interface
-- Clean, responsive single-page interface optimized for both desktop and mobile.
-- Sticky top navigation with unread notification badge.
-- Infinite-scroll home feed loaded via AJAX, with a "Load more" button and auto-poll for new posts every 60 seconds.
-- Relative timestamps (`5m`, `2h`, `3d`) with full date fallback for older posts.
-- Graceful avatar fallback — displays initials when an avatar image is unavailable or fails to load.
-
-### Technical Advantages
-- **Zero dependencies** — no Composer, no npm, no build step.
-- **Single-file deployment** — the entire application is `xfedi.php`.
-- **SQLite** — no database server required; WAL mode enabled for concurrent read performance.
-- **Self-contained federation** — no ActivityPub complexity; a clean, discoverable JSON API.
-- **Automatic bootstrapping** — database tables and the upload directory are created on first request.
+- **Truly single-file** — deploy by uploading one file; no Composer, no npm, no build step.
+- **Federated by design** — follow remote XFedi instances via `@user@domain/path/xfedi.php` handles; posts from followed instances are cached and surfaced in your home feed.
+- **Cross-instance interaction** — like and comment on remote posts; interactions are delivered to the origin server via the federation API.
+- **Rich post types** — text posts and image posts (JPEG, PNG, GIF, WebP) up to 10 MB.
+- **Responsive GitHub-inspired UI** — desktop sidebar layout + mobile bottom navigation; works on all screen sizes.
+- **Live feed polling** — background 60-second interval checks for new posts; one-click "Sync" to pull fresh content from followed instances.
+- **Full profile customisation** — display name, bio, avatar, cover photo, and external links.
+- **SEO-ready** — Open Graph, Twitter Card, canonical URLs, JSON-LD structured data, auto-generated XML sitemap, and robots.txt endpoint.
+- **Notifications** — tracks likes, comments, and follows from both local actions and remote federation interactions.
+- **Zero external dependencies** — no JavaScript frameworks, no CSS libraries, no third-party API calls.
+- **WAL-mode SQLite** — Write-Ahead Logging for improved concurrent read performance.
+- **GPL-3.0 licensed** — fully open source and auditable.
 
 ---
 
-## Installation Instructions
+## Requirements
 
-### Requirements
-- PHP **8.1** or later
-- The following PHP extensions enabled: `pdo`, `pdo_sqlite`, `fileinfo`, `json`, `session`
-- A web server (Apache, Nginx, Caddy, or PHP's built-in server)
-- HTTPS strongly recommended for production deployments
+- **PHP** 8.0 or later
+- **PHP extensions:** `pdo_sqlite`, `fileinfo`, `session`, `json`, `mbstring`
+- **Web server:** Apache (with `mod_rewrite` optional), Nginx, Caddy, or PHP built-in server
+- **SQLite 3** (bundled with PHP on most distributions)
+- Write permissions on the directory containing `xfedi.php`
 
-### Step 1 — Download the Application
+---
 
-Clone the repository or download `xfedi.php` directly:
+## Installation
+
+### 1. Download
 
 ```bash
 git clone https://github.com/xsukax/XFedi.git
 cd XFedi
 ```
 
-Or download the single file:
+Or download `xfedi.php` directly:
 
 ```bash
 wget https://raw.githubusercontent.com/xsukax/XFedi/main/xfedi.php
 ```
 
-### Step 2 — Place the File on Your Server
+### 2. Deploy
 
-Copy `xfedi.php` to your web root or a subdirectory:
+Place `xfedi.php` in a publicly accessible directory on your web server.
 
-```bash
-cp xfedi.php /var/www/html/xfedi.php
+```
+/var/www/html/
+└── xfedi.php        ← the application
 ```
 
-### Step 3 — Set Directory Permissions
+The following paths are created automatically on first run:
 
-XFedi needs to create `xfedi.db` and the `uploads/` directory in the same folder as `xfedi.php`. Ensure the web server user has write access:
+```
+/var/www/html/
+├── xfedi.php
+├── xfedi.db         ← SQLite database (auto-created)
+└── uploads/
+    └── .htaccess    ← security rules (auto-created)
+```
+
+### 3. Set permissions
 
 ```bash
-chown www-data:www-data /var/www/html/
 chmod 755 /var/www/html/
+chown www-data:www-data /var/www/html/
 ```
 
-### Step 4 — Configure Your Web Server
-
-**Apache** — ensure `mod_rewrite` is not required (XFedi uses query strings natively). A minimal virtual host:
+### 4. Apache virtual host (example)
 
 ```apache
-<VirtualHost *:443>
+<VirtualHost *:80>
     ServerName yourdomain.com
     DocumentRoot /var/www/html
+
     <Directory /var/www/html>
         AllowOverride All
         Require all granted
     </Directory>
-    SSLEngine on
-    SSLCertificateFile    /etc/ssl/certs/your_cert.pem
-    SSLCertificateKeyFile /etc/ssl/private/your_key.pem
 </VirtualHost>
 ```
 
-**Nginx** — a minimal server block:
+### 5. Nginx server block (example)
 
 ```nginx
 server {
-    listen 443 ssl;
+    listen 80;
     server_name yourdomain.com;
     root /var/www/html;
     index xfedi.php;
-
-    ssl_certificate     /etc/ssl/certs/your_cert.pem;
-    ssl_certificate_key /etc/ssl/private/your_key.pem;
 
     location / {
         try_files $uri $uri/ /xfedi.php?$query_string;
     }
 
     location ~ \.php$ {
-        include fastcgi_params;
         fastcgi_pass unix:/run/php/php8.2-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
     }
 
-    location /uploads/ {
+    # Block direct access to the database
+    location ~* \.(db|sqlite)$ {
         deny all;
     }
 }
 ```
 
-**PHP Built-in Server** (development only):
+### 6. First run
 
-```bash
-php -S localhost:8080 xfedi.php
-```
+Navigate to `https://yourdomain.com/xfedi.php` in your browser. You will be greeted with the setup wizard — choose your username (lowercase, 3–30 characters, numbers and underscores allowed).
 
-### Step 5 — First-Run Setup
-
-Navigate to `https://yourdomain.com/xfedi.php` in your browser. You will be presented with a one-time setup screen prompting you to choose a username (3–30 characters: lowercase letters, numbers, and underscores). After submission, you are logged in automatically.
-
-**Change your password immediately** after first login via **Settings → Change Password**. The default password is `admin@123`.
+> ⚠️ **Important:** The default password is `admin@123`. Change it immediately after setup via **Settings → Change Password**.
 
 ---
 
 ## php.ini Configuration
 
-XFedi relies on several PHP settings that must be properly configured for correct and secure operation. Review and adjust the following directives in your `php.ini` (commonly located at `/etc/php/8.x/fpm/php.ini` or `/etc/php/8.x/apache2/php.ini`):
+The following `php.ini` settings are recommended to ensure XFedi operates correctly, especially for image uploads and federation HTTP requests:
 
 ```ini
-; File uploads — required for avatar, cover, and post image uploads
+; Allow larger file uploads for image posts (XFedi default max: 10 MB)
+upload_max_filesize = 12M
+post_max_size = 14M
+
+; Enable file uploads
 file_uploads = On
-upload_max_filesize = 10M
-post_max_size = 12M
 
-; Execution time — increase if federation sync calls are slow
-max_execution_time = 30
+; Raise memory limit for image processing
+memory_limit = 128M
 
-; Session security — strongly recommended for production
+; Allow outbound HTTP requests for federation (fedFetch uses file_get_contents)
+allow_url_fopen = On
+
+; Recommended session security settings
 session.cookie_httponly = 1
 session.cookie_secure = 1
 session.use_strict_mode = 1
-session.cookie_samesite = Lax
 
-; SQLite PDO — must be enabled
+; Timezone (set to your local timezone)
+date.timezone = UTC
+
+; Required extensions (ensure these are enabled)
 extension = pdo_sqlite
-
-; File info — required for MIME type validation on uploads
 extension = fileinfo
-
-; JSON — typically compiled in; verify it is available
-extension = json
-
-; Memory — sufficient for image handling
-memory_limit = 128M
+extension = mbstring
 ```
 
-After editing `php.ini`, restart your PHP process:
+After editing `php.ini`, restart your PHP-FPM or web server:
 
 ```bash
 # PHP-FPM
@@ -243,111 +216,124 @@ sudo systemctl restart php8.2-fpm
 sudo systemctl restart apache2
 ```
 
-Verify your configuration by creating a temporary `phpinfo()` page and confirming `pdo_sqlite`, `fileinfo`, and `session` are listed as active extensions. **Remove the info page before going live.**
+> **Note:** `allow_url_fopen = On` is required for federation — XFedi uses `file_get_contents()` with a stream context to fetch remote profile data and post feeds. If your host disables this, federation features will be unavailable but the local instance will continue to function normally.
 
 ---
 
 ## Usage Guide
 
-### First Login and Password Change
-
-After completing the setup wizard, navigate to **Settings** (gear icon in the top navigation) and immediately change your password under the **Security** section. Enter your current password (`admin@123`), a new password of at least 8 characters, and confirm it.
-
-### Creating a Post
-
-From the **Home** feed, use the composer at the top of the page:
-
-1. Type your content (up to 500 characters) in the text area.
-2. To attach an image, select the image post type and choose a JPEG, PNG, GIF, or WebP file (max 10 MB).
-3. Click **Post** to publish.
-
-Your post appears in your feed immediately and is available to remote instances via the federation API.
-
-### Editing and Deleting Posts
-
-Open a post by clicking on it. If you are logged in, **Edit** and **Delete** buttons are available on your own posts. Editing updates the post content and marks it with an "edited" badge. Deleting removes the post, its associated comments, likes, and any stored image file.
-
-### Following Remote Instances
-
-Navigate to **Following** from the navigation bar. Enter a federated handle in the format:
-
-```
-@username@hostname/xfedi.php
-```
-
-Click **Follow**. XFedi will:
-1. Fetch the remote profile via the federation API.
-2. Store the handle, display name, and avatar locally.
-3. Send a follow notification to the remote instance.
-
-Remote posts from followed accounts appear in your home feed after the next sync.
-
-### Syncing the Feed
-
-On the home feed, click the **🔄 Sync** button to trigger an immediate fetch from up to 5 followed instances. New posts are prepended to the top of the feed. The feed also auto-polls every 60 seconds and displays a badge when new posts are available.
-
-### Viewing Remote Profiles
-
-Click on a remote account's handle or avatar anywhere in the feed or notification list. This opens the remote profile page, which displays the fetched profile data, their recent posts, and their follower list — all fetched live from the remote instance.
-
-### Notifications
-
-The bell icon in the navigation bar shows a badge count for unread notifications. Click it to view a list of recent likes, comments, and follow events. Viewing the notifications page marks all as read.
-
-### Managing Your Profile
-
-Navigate to **Settings** to update your display name, bio, avatar, cover image, and up to several custom links. All fields are optional; changes are saved immediately on form submission.
-
----
-
-## Architecture & Diagrams
-
-### Application Flow
+### First-time Setup
 
 ```mermaid
 flowchart TD
-    A[HTTP Request] --> B{Query String?}
-    B -->|?api=...| C[Federation API Layer]
-    B -->|?file=...| D[File Serving Layer]
-    B -->|?ajax=feed| E[AJAX Feed Endpoint]
-    B -->|page / POST| F[Page Router & Action Handler]
-
-    C --> G[(SQLite: xfedi.db)]
-    D --> H[uploads/ directory]
-    E --> G
-    F --> G
-    F --> H
-
-    C -->|JSON Response| Z[Remote XFedi Instance]
-    E -->|JSON| Y[Browser Feed JS]
-    F --> I[HTML Render]
+    A([Visit xfedi.php]) --> B{User exists?}
+    B -- No --> C[Setup wizard\nChoose username]
+    C --> D[Account created\nDefault password set]
+    D --> E[Logged in]
+    B -- Yes --> F[Login page]
+    F --> G{Credentials valid?}
+    G -- Yes --> E
+    G -- No --> F
+    E --> H([Home feed])
 ```
 
-### Federation Protocol Flow
+### Creating a Post
+
+1. Navigate to the **Home** page.
+2. Select **Text** or **Image** tab in the compose box.
+3. Write your content (up to 500 characters).
+4. For image posts, tap or drag an image into the upload zone.
+5. Click **Post**.
+
+### Following a Remote Instance
 
 ```mermaid
 sequenceDiagram
-    participant Alice as Alice's XFedi
-    participant Bob as Bob's XFedi
+    participant U as Your Instance
+    participant R as Remote Instance
 
-    Alice->>Bob: GET ?api=profile
-    Bob-->>Alice: JSON { handle, name, bio, avatar, ... }
+    U->>U: Enter handle @user@remote.com/xfedi.php
+    U->>R: GET ?api=profile
+    R-->>U: Profile JSON (name, avatar, bio)
+    U->>U: Store in follows table
+    U->>R: POST ?api=interact {type: "follow", actor: "@you@yourdomain.com/xfedi.php"}
+    R-->>U: {ok: true}
+    Note over U: Remote user appears in Following list
+```
 
-    Alice->>Bob: POST ?api=interact { type: follow, actor: @alice@... }
-    Bob-->>Alice: JSON { ok: true }
+**Handle format:**
+```
+@username@domain.com/path/to/xfedi.php
+```
 
-    Note over Alice: Stores Bob in follows table
+### Feed Synchronisation
 
-    Alice->>Bob: GET ?api=posts&limit=20
-    Bob-->>Alice: JSON { posts: [...], profile: {...} }
+```mermaid
+flowchart LR
+    A([Click Sync]) --> B[POST action=refresh_feed]
+    B --> C[Select up to 5 random\nfollowed handles]
+    C --> D[GET ?api=posts&limit=20\nfrom each remote]
+    D --> E{Post in cache?}
+    E -- No --> F[INSERT into feed_cache]
+    E -- Yes, changed --> G[UPDATE feed_cache]
+    E -- Yes, unchanged --> H[Skip]
+    F & G & H --> I[Background poll\nevery 60 seconds]
+    I --> J{New posts\ndetected?}
+    J -- Yes --> K[Show 'New posts' button]
+    J -- No --> L[Feed up to date]
+```
 
-    Note over Alice: Caches posts in feed_cache table
+### Interacting with Remote Posts
 
-    Bob->>Alice: POST ?api=interact { type: like, actor: @bob@... }
-    Alice-->>Bob: JSON { ok: true, likes: 5 }
+- **Like** — Sends a `POST ?api=interact` request with `{type: "like"}` to the origin server. The like count updates in real time.
+- **Comment** — Delivered to the origin server via the interact API. Your federated handle (`@you@yourdomain.com/xfedi.php`) is recorded as the author.
+- **Share** — Uses the Web Share API (mobile) or copies the post URL to clipboard.
 
-    Bob->>Alice: POST ?api=interact { type: comment, actor: @bob@..., content: "..." }
-    Alice-->>Bob: JSON { ok: true, comments: [...] }
+### Profile Management
+
+Navigate to **Settings** to:
+- Update display name, bio, and external links
+- Upload a profile picture (400×400 px recommended) and cover photo (1500×500 px recommended)
+- Change your password
+- View your shareable federation handle
+- Access SEO endpoints (sitemap, robots.txt)
+
+---
+
+## Architecture & Flow
+
+```mermaid
+flowchart TD
+    subgraph Request["HTTP Request"]
+        Q1["?api=*"] --> FED["Federation API\n(public, CORS-enabled)"]
+        Q2["?file=*"] --> FILES["File serving\n(avatar, cover, post images)"]
+        Q3["?sitemap"] --> SEO1["XML Sitemap"]
+        Q4["?robots"] --> SEO2["robots.txt"]
+        Q5["?ajax=feed"] --> AJAX["JSON Feed\n(local + cached remote)"]
+        Q6["Page request"] --> CTRL["Page Controller"]
+    end
+
+    subgraph Storage["Storage Layer"]
+        DB[(xfedi.db\nSQLite WAL)]
+        UPL[uploads/]
+    end
+
+    FED --> DB
+    FILES --> UPL
+    AJAX --> DB
+    CTRL --> DB
+    CTRL --> UPL
+
+    subgraph Pages["Rendered Pages"]
+        CTRL --> HOME["Home (feed)"]
+        CTRL --> PROF["Profile"]
+        CTRL --> POST["Single post + comments"]
+        CTRL --> FOLL["Following / Followers"]
+        CTRL --> NOTIF["Notifications"]
+        CTRL --> SET["Settings"]
+        CTRL --> RPROF["Remote profile"]
+        CTRL --> RPOST["Remote post"]
+    end
 ```
 
 ### Database Schema
@@ -423,79 +409,40 @@ erDiagram
     posts ||--o{ comments : "has"
 ```
 
-### Request Lifecycle
-
-```mermaid
-flowchart LR
-    subgraph Browser
-        A[Page Load] --> B[AJAX: loadFeed]
-        B --> C{has_more?}
-        C -->|Yes| D[Load More Button]
-        C -->|No| E[All loaded]
-        B --> F[60s interval poll]
-        F --> G{new posts?}
-        G -->|Yes| H[Show badge]
-    end
-
-    subgraph Server
-        I[?ajax=feed] --> J[Query local posts]
-        J --> K[Query feed_cache]
-        K --> L[Merge & sort by ts]
-        L --> M[Paginate: 20 PPP]
-        M --> N[JSON Response]
-    end
-
-    B --> I
-    N --> B
-```
-
 ---
 
-## API Reference
+## Federation API
 
-XFedi exposes a public JSON API consumed by other XFedi instances for federation. All endpoints are accessed via query string parameters on the main script URL.
+XFedi exposes a public JSON API that enables federation between instances. All endpoints are accessible without authentication.
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `?api=profile` | GET | Returns the instance owner's profile data. |
-| `?api=posts&limit=N&since=T` | GET | Returns recent posts, optionally filtered by timestamp. |
-| `?api=post&id=N` | GET | Returns a single post with its full comment list. |
-| `?api=followers&limit=N` | GET | Returns the instance's follower list. |
-| `?api=interact` | POST | Accepts federation interactions: `like`, `comment`, `follow`, `unfollow`. |
+| `?api=profile` | GET | Returns the instance owner's profile data |
+| `?api=posts` | GET | Returns recent posts (`limit`, `since` params supported) |
+| `?api=post&id={n}` | GET | Returns a single post with comments |
+| `?api=followers` | GET | Returns the followers list |
+| `?api=interact` | POST | Accepts `like`, `comment`, `follow`, `unfollow` actions |
 
-All endpoints return `Content-Type: application/json` and include `Access-Control-Allow-Origin: *` for cross-origin federation.
-
-**Example — fetch a remote profile:**
-
+**Example: fetch a remote profile**
 ```bash
-curl https://remote-instance.example.com/xfedi.php?api=profile
+curl "https://remote.example.com/xfedi.php?api=profile"
 ```
 
-**Example — send a follow interaction:**
-
+**Example: send a follow action**
 ```bash
-curl -X POST https://remote-instance.example.com/xfedi.php?api=interact \
+curl -X POST "https://remote.example.com/xfedi.php?api=interact" \
   -H "Content-Type: application/json" \
-  -d '{"type":"follow","actor":"@alice@myinstance.example.com/xfedi.php","name":"Alice","avatar":""}'
+  -d '{"type":"follow","actor":"@you@yourdomain.com/xfedi.php","name":"Your Name","avatar":""}'
 ```
 
 ---
 
-## File Structure
+## License
 
-After first run, your deployment directory will contain:
-
-```
-xfedi.php          ← The entire application
-xfedi.db           ← Auto-created SQLite database
-uploads/           ← Auto-created directory for media files
-uploads/.htaccess  ← Auto-written: disables indexing and PHP execution
-```
-
-No other files are required. To back up your instance, copy `xfedi.db` and the `uploads/` directory.
+This project is licensed under the **GNU General Public License v3.0** — see the [LICENSE](https://www.gnu.org/licenses/gpl-3.0.html) file for details.
 
 ---
 
-## Licensing Information
-
-This project is licensed under the GNU General Public License v3.0 — see the [LICENSE](https://www.gnu.org/licenses/gpl-3.0.html) file or the header of `xfedi.php` for full terms.
+<div align="center">
+  <sub>Built with ❤️ by <a href="https://github.com/xsukax">xsukax</a> · <a href="https://github.com/xsukax/XFedi">GitHub Repository</a></sub>
+</div>
