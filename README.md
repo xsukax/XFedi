@@ -1,4 +1,4 @@
-# XFedi ✦
+# XFedi ✦ xsukax Federated Social Media Platform
 
 > **A single-file, self-hosted federated social media platform built in PHP.**
 
