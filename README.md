@@ -9,6 +9,8 @@
 
 ---
 
+**Check Demo:** [https://bashub.sbs/xfedi/xfedi.php](https://bashub.sbs/xfedi/xfedi.php)
+
 **Check my Instance:** [https://xsukax.net/xfedi.php](https://xsukax.net/xfedi.php) 
 
 ---
