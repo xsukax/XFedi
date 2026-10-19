@@ -45,21 +45,6 @@ For manual setup, copy `.env.example` to `.env`, set `DOMAIN`, `LOCAL_PORT`, and
 
 **The public identity is always HTTPS.** The tunnel origin stays HTTP on loopback. `XFEDI_URL` is formed from `DOMAIN` and `FEDERATION_PATH`; it is never set to `http://localhost`.
 
-## Upgrade from XFedi 2.0 or xsukax Fediverse v1.2
-
-Use the **same installation directory, `.env`, Docker context, Compose project name, and `app_data` volume**. The Compose name remains `xsukax-fediverse` intentionally. If you previously used `docker compose -p NAME` or `COMPOSE_PROJECT_NAME`, keep that exact override for every command. Do not create a second empty volume by renaming the project, and never use `docker compose down -v` during an upgrade.
-
-1. With the old release still in place, run its `backup.sh` and retain that database snapshot, the old source, `.env`, and a volume snapshot that includes uploaded images.
-2. Stop web writes before replacing the entrypoint: `docker compose stop php worker`.
-3. Copy the XFedi release files into that installation directory. Keep the existing `.env` and `backups/` directory.
-4. Preserve `DOMAIN` and **the exact existing `FEDERATION_PATH`**. If it was absent in v1.2, leave it absent: the Compose fallback remains `/xsukax_fediverse.php`. An explicit `/index.php` stays `/index.php`.
-5. Run `./upgrade.sh`. It builds the new runtime, takes a consistent pre-migration database-and-media backup using the new image, runs additive migrations, restarts services, and checks origin isolation.
-6. Visit your profile and compare post/follow counts, images, and the actor ID. Run the live acceptance steps in [TESTING.md](docs/TESTING.md).
-
-The first migration stores the configured identity URL and rejects subsequent changes. For a legacy database that has never stored that value, the operator must supply the original identity accurately on its first upgrade. The code cannot infer a historical hostname from a database that never recorded it.
-
-Migrations add columns, indexes, and tables; they do not regenerate keys, renumber posts, rename the account, or drop original records. Human URLs become `/@username` and `/@username/123`; old query URLs and old ActivityPub object IDs continue working. Renaming the public domain or changing `FEDERATION_PATH` after federation begins is not an account migration.
-
 ## URLs
 
 | Purpose | URL |
@@ -137,5 +122,3 @@ For an isolated local preview, set a permanent-looking test `XFEDI_URL`, a separ
 Commit this source directory, including the Docker files, `app/`, `assets/`, `bin/`, tests, docs, and `.github/workflows/ci.yml`. Exclude `.env`, backups, databases, private keys, and generated cache directories. The supplied `.gitignore` and `.dockerignore` cover those files. Review the GitHub Actions results before tagging a release; the container job performs checks that were unavailable in the authoring environment.
 
 The package is prepared for source publication. **Live Mastodon interoperability and production deployment acceptance must still be performed against your public hostname.** No remote account or production server was changed while preparing this release.
-
-MIT licensed. Builds on the supplied xsukax Fediverse v1.2 source; see [LICENSE](LICENSE).
