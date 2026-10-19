@@ -1,6 +1,6 @@
 # XFedi
 
-**A personal home on the Fediverse.** XFedi is a single-account ActivityPub server built with PHP, a Python background-job supervisor, SQLite, and Docker. It upgrades xsukax Fediverse v1.2 while retaining its account, signing keys, canonical ActivityPub IDs, and private data volume.
+**A personal home on the Fediverse.** XFedi is a single-account ActivityPub server built with PHP, a Python background-job supervisor, SQLite, and Docker.
 
 ![XFedi desktop interface](docs/preview-desktop.jpg)
 
