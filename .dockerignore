@@ -1,0 +1,12 @@
+**/.git
+.env
+backups/
+tests/
+docs/
+.github/
+*.zip
+*.sqlite*
+*.db*
+*.pem
+*.key
+__pycache__/

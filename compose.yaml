@@ -1,0 +1,96 @@
+# Keep this project name: v1.2 upgrades reuse its existing app_data volume.
+name: xsukax-fediverse
+
+services:
+  php:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xsukax-fediverse-php:local
+    restart: unless-stopped
+    environment:
+      # This MUST be the permanent externally accessible HTTPS identity.
+      XFEDI_URL: https://${DOMAIN:?Run ./install.sh first}${FEDERATION_PATH:-/xsukax_fediverse.php}
+      XFEDI_DATA_DIR: /var/lib/xsukax-fediverse
+      # Deployment mode flags (see README):
+      #  TRUST_PROXY=1          another TLS proxy terminates HTTPS in front of Caddy
+      #                         and forwards X-Forwarded-Proto: https
+      #  ALLOW_INSECURE_HTTP=1  direct plain-HTTP use with NO proxy at all
+      #                         (localhost/LAN only; never expose this publicly)
+      XFEDI_SETUP_TOKEN: ${XFEDI_SETUP_TOKEN:-}
+      XFEDI_TRUST_PROXY: ${TRUST_PROXY:-0}
+      XFEDI_ALLOW_INSECURE_HTTP: ${ALLOW_INSECURE_HTTP:-0}
+    volumes:
+      # SQLite, signing keys (inside SQLite), uploads, and worker lock all live here.
+      # This volume is NEVER mounted into Caddy or exposed as a host port.
+      - app_data:/var/lib/xsukax-fediverse
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(!(extension_loaded('pdo_sqlite') && extension_loaded('curl') && extension_loaded('mbstring') && extension_loaded('dom') && extension_loaded('openssl') && is_writable('/var/lib/xsukax-fediverse')));"]
+      interval: 30s
+      timeout: 5s
+      retries: 4
+      start_period: 10s
+
+  worker:
+    image: xsukax-fediverse-php:local
+    restart: unless-stopped
+    depends_on:
+      php:
+        condition: service_healthy
+    command: ["python3", "/srv/app/worker.py"]
+    environment:
+      XFEDI_URL: https://${DOMAIN:?Run ./install.sh first}${FEDERATION_PATH:-/xsukax_fediverse.php}
+      XFEDI_DATA_DIR: /var/lib/xsukax-fediverse
+    volumes:
+      - app_data:/var/lib/xsukax-fediverse
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import time,pathlib; p=pathlib.Path('/var/lib/xsukax-fediverse/worker-heartbeat'); raise SystemExit(0 if p.exists() and time.time()-float(p.read_text())<900 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+  web:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      php:
+        condition: service_healthy
+    environment:
+      FEDERATION_PATH: ${FEDERATION_PATH:-/xsukax_fediverse.php}
+    ports:
+      # Host-local ONLY: Cloudflared installed on the Docker HOST connects here.
+      # Do not replace 127.0.0.1 with 0.0.0.0 or publish this on the Internet.
+      - "127.0.0.1:${LOCAL_PORT:-8080}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddy sees just the one PHP entrypoint, never app_data or .env.
+      # No file_server directive exists; this script is sent to PHP-FPM.
+      - ./index.php:/srv/app/index.php:ro
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+      - /config:mode=1777,size=8m
+      - /data:mode=1777,size=8m
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  app_data:

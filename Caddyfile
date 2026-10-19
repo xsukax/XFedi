@@ -1,0 +1,30 @@
+{
+    auto_https off
+    admin off
+}
+# Only index.php is present here. No file_server, and no private volume mount.
+:80 {
+    root * /srv/app
+    encode zstd gzip
+    request_body {
+        max_size 10MB
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        X-Frame-Options DENY
+        -Server
+    }
+    @app path / /index.php /xsukax_fediverse.php {$FEDERATION_PATH:/index.php} /.well-known/webfinger /.well-known/nodeinfo /nodeinfo/2.1 /@* /tags/* /assets/theme.css /assets/ui.js /public /public/local /instances /notifications /search /accounts /statuses /following /followers /settings /queue /boosts /bookmarks /quote /auth/sign_in /feed.rss /sitemap.xml /robots.txt /healthz
+    handle @app {
+        rewrite * /index.php
+        php_fastcgi php:9000 {
+            try_files {path} =404
+            env HTTPS on
+            env REQUEST_URI {http.request.orig_uri}
+        }
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
